@@ -19,6 +19,7 @@ interface AppContextType {
   addMessage: (threadId: string, role: "user" | "model", content: string) => Promise<AIMessage>;
   clearDatabase: () => Promise<void>;
   importDatabase: (jsonString: string) => Promise<void>;
+  toggleInstallmentsBatch: (ids: string[]) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -30,7 +31,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const fetchState = async () => {
     try {
       const data = await db.init();
-      setState({ ...data });
+      setState({
+        profile: data.profile ? { ...data.profile } : null,
+        challenges: [...data.challenges],
+        installments: [...data.installments],
+        threads: [...data.threads],
+        messages: [...data.messages],
+      } as DatabaseState);
     } catch (e) {
       console.error("Failed to fetch state:", e);
     } finally {
@@ -90,6 +97,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await db.importDatabase(jsonString);
   };
 
+  const toggleInstallmentsBatch = async (ids: string[]) => {
+    await db.toggleInstallmentsBatch(ids);
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -110,6 +121,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addMessage,
         clearDatabase,
         importDatabase,
+        toggleInstallmentsBatch,
       }}
     >
       {children}

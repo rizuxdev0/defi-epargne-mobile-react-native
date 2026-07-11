@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   SafeAreaView, Platform,
   StatusBar,
+  Dimensions,
 } from "react-native";
 import { Plus, Flame, Trophy, Sparkles, Settings, MessageSquare, History } from "lucide-react-native";
 import { useApp } from "../services/AppContext";
@@ -15,6 +16,25 @@ import { useGamification } from "../hooks/useGamification";
 import { COLORS } from "../lib/theme";
 import { getCategory } from "../lib/categories";
 import { LinearGradient } from "expo-linear-gradient";
+import Svg, { Path, Circle, Defs, LinearGradient as SvgLinearGradient, Stop } from "react-native-svg";
+
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
+const CHART_WIDTH = SCREEN_WIDTH - 80;
+const CHART_HEIGHT = 100;
+
+const CATEGORY_COLORS: { [key: string]: string } = {
+  travel: "#3B82F6",    // Bleu
+  emergency: "#EF4444", // Rouge
+  tech: "#10B981",      // Vert
+  education: "#8B5CF6", // Violet
+  family: "#F59E0B",    // Orange
+  wedding: "#EC4899",   // Rose
+  vehicle: "#06B6D4",   // Cyan
+  home: "#6366F1",      // Indigo
+  business: "#14B8A6",  // Turquoise
+  gift: "#F43F5E",      // Rose foncé
+  other: "#6C3FC4",     // Violet foncé
+};
 
 export default function DashboardScreen({ navigation }: any) {
   const { profile, challenges, installments } = useApp();
@@ -24,20 +44,96 @@ export default function DashboardScreen({ navigation }: any) {
 
   const themeColors = COLORS[profile?.theme || "light"];
 
-  const activeChallenges = challenges
-    .filter((c) => c.status === "active")
-    .map((c) => {
-      const insts = installments.filter((i) => i.challenge_id === c.id);
-      const saved = insts.filter((i) => i.is_checked).reduce((sum, i) => sum + i.amount, 0);
-      return {
-        ...c,
-        saved,
-        total_installments: insts.length,
-        checked_installments: insts.filter((i) => i.is_checked).length,
-      };
+  const activeChallenges = React.useMemo(() => {
+    return challenges
+      .filter((c) => c.status === "active")
+      .map((c) => {
+        const insts = installments.filter((i) => i.challenge_id === c.id);
+        const saved = insts.filter((i) => i.is_checked).reduce((sum, i) => sum + i.amount, 0);
+        return {
+          ...c,
+          saved,
+          total_installments: insts.length,
+          checked_installments: insts.filter((i) => i.is_checked).length,
+        };
+      });
+  }, [challenges, installments]);
+
+  const totalSaved = React.useMemo(() => {
+    return activeChallenges.reduce((s, c) => s + c.saved, 0);
+  }, [activeChallenges]);
+
+  const donutData = React.useMemo(() => {
+    const stats: { [key: string]: number } = {};
+    activeChallenges.forEach((c) => {
+      if (c.category) {
+        stats[c.category] = (stats[c.category] || 0) + c.saved;
+      }
     });
 
-  const totalSaved = activeChallenges.reduce((s, c) => s + c.saved, 0);
+    const total = Object.values(stats).reduce((sum, val) => sum + val, 0);
+    if (total === 0) return [];
+
+    let currentOffset = 0;
+    const radius = 35;
+    const circumference = 2 * Math.PI * radius;
+
+    return Object.keys(stats).map((catId) => {
+      const cat = getCategory(catId);
+      const amount = stats[catId];
+      const percentage = amount / total;
+      const strokeLength = percentage * circumference;
+      const strokeOffset = circumference - strokeLength + currentOffset;
+      currentOffset -= strokeLength;
+
+      return {
+        id: catId,
+        label: cat?.label || "Autre",
+        emoji: cat?.emoji || "🎯",
+        color: CATEGORY_COLORS[catId] || CATEGORY_COLORS.other,
+        amount,
+        percentage,
+        strokeOffset,
+      };
+    }).filter(item => item.amount > 0);
+  }, [activeChallenges]);
+
+  // Savings Evolution Chart Data
+  const chartData = React.useMemo(() => {
+    const checked = installments
+      .filter((i) => i.is_checked && i.checked_at)
+      .sort((a, b) => new Date(a.checked_at!).getTime() - new Date(b.checked_at!).getTime());
+
+    if (checked.length === 0) return [];
+
+    let total = 0;
+    const list = checked.map((c) => {
+      total += c.amount;
+      return { amount: total };
+    });
+
+    // Prepend 0 to make it start at 0
+    return [{ amount: 0 }, ...list];
+  }, [installments]);
+
+  const { linePath, areaPath, points } = React.useMemo(() => {
+    if (chartData.length < 2) return { linePath: "", areaPath: "", points: [] };
+
+    const maxVal = Math.max(...chartData.map((d) => d.amount)) || 1;
+    const w = CHART_WIDTH;
+    const h = CHART_HEIGHT;
+
+    const pts = chartData.map((d, i) => {
+      const x = (i / (chartData.length - 1)) * w;
+      const y = h - (d.amount / maxVal) * (h - 20) - 10;
+      return { x, y };
+    });
+
+    const lPath = `M ${pts.map((p) => `${p.x} ${p.y}`).join(" L ")}`;
+    const aPath = `${lPath} L ${pts[pts.length - 1].x} ${h} L 0 ${h} Z`;
+
+    return { linePath: lPath, areaPath: aPath, points: pts };
+  }, [chartData]);
 
   const usedCategories = Array.from(
     new Set(activeChallenges.map((c) => c.category).filter(Boolean) as string[]),
@@ -143,6 +239,114 @@ export default function DashboardScreen({ navigation }: any) {
                 </View>
               ))}
             </ScrollView>
+          </View>
+        )}
+
+        {/* Categories Distribution Donut Chart */}
+        {activeChallenges.length > 0 && (
+          <View style={[styles.chartCard, { backgroundColor: themeColors.card, borderColor: themeColors.border, marginTop: 15 }]}>
+            <Text style={[styles.chartTitle, { color: themeColors.foreground }]}>Répartition par Catégorie</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 15 }}>
+              
+              {/* SVG Donut Circle */}
+              <View style={{ position: "relative", width: 100, height: 100, alignItems: "center", justifyContent: "center" }}>
+                <Svg width="100" height="100" viewBox="0 0 100 100" style={{ transform: [{ rotate: "-90deg" }] }}>
+                  {donutData.length === 0 ? (
+                    <Circle
+                      cx="50"
+                      cy="50"
+                      r="35"
+                      fill="transparent"
+                      stroke={themeColors.border}
+                      strokeWidth="12"
+                    />
+                  ) : (
+                    donutData.map((slice) => (
+                      <Circle
+                        key={slice.id}
+                        cx="50"
+                        cy="50"
+                        r="35"
+                        fill="transparent"
+                        stroke={slice.color}
+                        strokeWidth="12"
+                        strokeDasharray={`${2 * Math.PI * 35}`}
+                        strokeDashoffset={slice.strokeOffset}
+                        strokeLinecap="round"
+                      />
+                    ))
+                  )}
+                </Svg>
+                
+                {/* Center text of the Donut */}
+                <View style={{ position: "absolute", alignItems: "center" }}>
+                  <Text style={{ fontSize: 9, color: themeColors.mutedForeground, textTransform: "uppercase", fontWeight: "700" }}>Total</Text>
+                  <Text style={{ fontSize: 13, fontWeight: "bold", color: themeColors.foreground }}>
+                    {donutData.length === 0 ? "0" : fmt(totalSaved).split(" ")[0]}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Legends List */}
+              <View style={{ flex: 1, marginLeft: 20, gap: 8 }}>
+                {donutData.length === 0 ? (
+                  <Text style={{ fontSize: 12, color: themeColors.mutedForeground }}>
+                    Aucun versement n'a encore été coché pour les défis actifs.
+                  </Text>
+                ) : (
+                  donutData.map((slice) => {
+                    const pctVal = Math.round(slice.percentage * 100);
+                    return (
+                      <View key={slice.id} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                          <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: slice.color }} />
+                          <Text style={{ fontSize: 12, color: themeColors.foreground, fontWeight: "600" }} numberOfLines={1}>
+                            {slice.emoji} {slice.label}
+                          </Text>
+                        </View>
+                        <Text style={{ fontSize: 12, color: themeColors.mutedForeground, fontWeight: "bold" }}>
+                          {pctVal}%
+                        </Text>
+                      </View>
+                    );
+                  })
+                )}
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Progression Chart */}
+        {chartData.length > 1 && (
+          <View style={[styles.chartCard, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+            <Text style={[styles.chartTitle, { color: themeColors.foreground }]}>Évolution de l'épargne</Text>
+            <View style={styles.chartContainer}>
+              <Svg width={CHART_WIDTH} height={CHART_HEIGHT}>
+                <Defs>
+                  <SvgLinearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                    <Stop offset="0%" stopColor={themeColors.primary} stopOpacity={0.25} />
+                    <Stop offset="100%" stopColor={themeColors.primary} stopOpacity={0.0} />
+                  </SvgLinearGradient>
+                </Defs>
+                <Path d={areaPath} fill="url(#chartGrad)" />
+                <Path d={linePath} fill="none" stroke={themeColors.primary} strokeWidth={3} />
+                {points.map((p, idx) => (
+                  <Circle
+                    key={idx}
+                    cx={p.x}
+                    cy={p.y}
+                    r={idx === points.length - 1 ? 5 : 3}
+                    fill={idx === points.length - 1 ? themeColors.secondary : themeColors.primary}
+                  />
+                ))}
+              </Svg>
+            </View>
+            <View style={styles.chartLegend}>
+              <Text style={{ fontSize: 10, color: themeColors.mutedForeground }}>Début</Text>
+              <Text style={{ fontSize: 10, color: themeColors.mutedForeground, fontWeight: "bold" }}>
+                Total cumulé : {fmt(totalSaved)}
+              </Text>
+            </View>
           </View>
         )}
 
@@ -559,5 +763,25 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     justifyContent: "center",
     alignItems: "center",
+  },
+  chartCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    padding: 20,
+    marginTop: 15,
+  },
+  chartTitle: {
+    fontSize: 15,
+    fontWeight: "bold",
+  },
+  chartContainer: {
+    alignItems: "center",
+    height: 100,
+    marginTop: 15,
+  },
+  chartLegend: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 8,
   },
 });

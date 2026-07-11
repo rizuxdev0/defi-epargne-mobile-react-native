@@ -122,7 +122,7 @@ export const db = {
         const fileContent = await readAsStringAsync(DB_FILE_PATH);
         const parsed = JSON.parse(fileContent) as Partial<DatabaseState>;
         cachedState = {
-          profile: parsed.profile || DEFAULT_PROFILE,
+          profile: parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile } : DEFAULT_PROFILE,
           challenges: parsed.challenges || [],
           installments: parsed.installments || [],
           threads: parsed.threads || [],
@@ -272,6 +272,39 @@ export const db = {
     return state.installments[idx];
   },
 
+  async toggleInstallmentsBatch(ids: string[]): Promise<void> {
+    const state = await this.init();
+    
+    ids.forEach((id) => {
+      const idx = state.installments.findIndex((i) => i.id === id);
+      if (idx !== -1) {
+        const inst = state.installments[idx];
+        const is_checked = !inst.is_checked;
+        state.installments[idx] = {
+          ...inst,
+          is_checked,
+          checked_at: is_checked ? new Date().toISOString() : null,
+        };
+
+        // Check completion for the challenge
+        const challengeId = inst.challenge_id;
+        const challengeInsts = state.installments.filter((i) => i.challenge_id === challengeId);
+        const allChecked = challengeInsts.every((i) => i.is_checked);
+        const challengeIdx = state.challenges.findIndex((c) => c.id === challengeId);
+        if (challengeIdx !== -1) {
+          const currentStatus = state.challenges[challengeIdx].status;
+          if (allChecked && currentStatus === "active") {
+            state.challenges[challengeIdx].status = "completed";
+          } else if (!allChecked && currentStatus === "completed") {
+            state.challenges[challengeIdx].status = "active";
+          }
+        }
+      }
+    });
+
+    await this.save();
+  },
+
   // AI COACH operations
   async getThreads(): Promise<AIThread[]> {
     const state = await this.init();
@@ -335,7 +368,7 @@ export const db = {
     try {
       const parsed = JSON.parse(jsonString) as Partial<DatabaseState>;
       cachedState = {
-        profile: parsed.profile || DEFAULT_PROFILE,
+        profile: parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile } : DEFAULT_PROFILE,
         challenges: parsed.challenges || [],
         installments: parsed.installments || [],
         threads: parsed.threads || [],

@@ -103,7 +103,7 @@ export default function AuthScreen({ navigation }: any) {
           <View style={styles.iconCircle}>
             <Sparkles size={40} color={themeColors.primary} />
           </View>
-          <Text style={[styles.title, { color: themeColors.foreground }]}>Bienvenue sur Goal Glow</Text>
+          <Text style={[styles.title, { color: themeColors.foreground }]}>Bienvenue sur Défi Épargne</Text>
           <Text style={[styles.subtitle, { color: themeColors.mutedForeground }]}>
             Configurez votre profil d'épargne local sécurisé.
           </Text>
@@ -165,7 +165,7 @@ export default function AuthScreen({ navigation }: any) {
             <View style={[styles.lockIconCircle, { backgroundColor: `${themeColors.primary}15` }]}>
               <Lock size={32} color={themeColors.primary} />
             </View>
-            <Text style={[styles.title, { color: themeColors.foreground, marginTop: 20 }]}>Goal Glow Sécurisé</Text>
+            <Text style={[styles.title, { color: themeColors.foreground, marginTop: 20 }]}>Défi Épargne Sécurisé</Text>
             <Text style={[styles.subtitle, { color: themeColors.mutedForeground, marginTop: 5 }]}>
               Saisissez votre code PIN pour déverrouiller
             </Text>

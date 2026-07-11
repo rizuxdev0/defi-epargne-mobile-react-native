@@ -12,6 +12,24 @@ Notifications.setNotificationHandler({
   }),
 });
 
+const MOTIVATIONAL_QUOTES = [
+  "Chaque petit pas compte. Prêt pour ton versement du jour ? 🌱",
+  "Épargner, ce n'est pas se priver, c'est s'offrir un avenir plus serein. 🛡️",
+  "Un sou économisé est un sou gagné. Tes objectifs t'attendent ! 🎯",
+  "La régularité bat la quantité. Coche ta case d'aujourd'hui ! 💪",
+  "Fais aujourd'hui ce que ton futur toi te remerciera d'avoir fait. 🚀",
+  "Construis ta liberté financière, un versement à la fois. 💎",
+  "Plus tu commences tôt, plus vite tu atteindras les sommets ! 🏔️",
+  "N'attends pas qu'il te reste de l'argent pour épargner, épargne d'abord ! 💰",
+];
+
+const WEEKLY_QUOTES = [
+  "C'est l'heure du bilan hebdomadaire ! Fais le point sur tes défis et valide tes économies de la semaine. 📈",
+  "Une semaine de plus vers la liberté financière ! Viens cocher tes progrès sur l'application. 🎯",
+  "Bilan d'épargne de la semaine : as-tu gardé le rythme ? Tes défis t'attendent ! ⚡",
+  "Chaque semaine est une opportunité de grandir. Coche tes versements et célèbre tes victoires. 🏆",
+];
+
 export const notificationService = {
   /**
    * Request permissions from the user. Returns true if granted.
@@ -32,6 +50,7 @@ export const notificationService = {
 
   /**
    * Cancel all existing reminders and schedule new reminders based on frequency, hour, and minute.
+   * Schedules multiple days of notifications with unique motivational quotes.
    */
   async scheduleReminders(
     enabled: boolean, 
@@ -50,60 +69,109 @@ export const notificationService = {
     const hasPermission = await this.requestPermissions();
     if (!hasPermission) return;
 
-    const notificationContent = {
-      title: "Goal Glow 🎯",
-      body: "Prenez une minute pour mettre de l'argent de côté aujourd'hui ! Vos objectifs vous attendent. 💪",
-      sound: true,
-    };
-
     if (frequency === "daily") {
-      await Notifications.scheduleNotificationAsync({
-        content: notificationContent,
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.DAILY,
-          hour: hour,
-          minute: minute,
-        },
-      });
-    } else if (frequency === "twice_daily") {
-      // Schedule first reminder
-      await Notifications.scheduleNotificationAsync({
-        content: notificationContent,
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.DAILY,
-          hour: hour,
-          minute: minute,
-        },
-      });
+      // Schedule 7 daily reminders with different quotes
+      for (let i = 0; i < 7; i++) {
+        const triggerDate = new Date();
+        triggerDate.setDate(triggerDate.getDate() + i);
+        triggerDate.setHours(hour, minute, 0, 0);
 
-      // Schedule second reminder 12 hours later
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: "Goal Glow 🎯",
-          body: "Un petit rappel pour booster votre épargne ! Avez-vous atteint votre cible du jour ? 🚀",
-          sound: true,
-        },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.DAILY,
-          hour: (hour + 12) % 24,
-          minute: minute,
-        },
-      });
+        if (triggerDate.getTime() <= Date.now()) {
+          triggerDate.setDate(triggerDate.getDate() + 1);
+        }
+
+        const quote = MOTIVATIONAL_QUOTES[i % MOTIVATIONAL_QUOTES.length];
+
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "Défi Épargne 🎯",
+            body: quote,
+            sound: true,
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: triggerDate,
+          },
+        });
+      }
+    } else if (frequency === "twice_daily") {
+      // Schedule 7 days of twice daily reminders
+      for (let i = 0; i < 7; i++) {
+        // Morning/Primary trigger
+        const triggerDate1 = new Date();
+        triggerDate1.setDate(triggerDate1.getDate() + i);
+        triggerDate1.setHours(hour, minute, 0, 0);
+
+        if (triggerDate1.getTime() <= Date.now()) {
+          triggerDate1.setDate(triggerDate1.getDate() + 1);
+        }
+
+        const quote1 = MOTIVATIONAL_QUOTES[i % MOTIVATIONAL_QUOTES.length];
+
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "Défi Épargne 🎯",
+            body: quote1,
+            sound: true,
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: triggerDate1,
+          },
+        });
+
+        // Evening trigger (12 hours later)
+        const triggerDate2 = new Date();
+        triggerDate2.setDate(triggerDate2.getDate() + i);
+        triggerDate2.setHours((hour + 12) % 24, minute, 0, 0);
+
+        if (triggerDate2.getTime() <= Date.now()) {
+          triggerDate2.setDate(triggerDate2.getDate() + 1);
+        }
+
+        const quote2 = MOTIVATIONAL_QUOTES[(i + 4) % MOTIVATIONAL_QUOTES.length];
+
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "Défi Épargne 🎯",
+            body: `Petit coup de pouce : ${quote2}`,
+            sound: true,
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: triggerDate2,
+          },
+        });
+      }
     } else if (frequency === "weekly") {
-      // Schedule weekly reminder on Sunday (weekday 1 in SchedulableTriggerInputTypes.WEEKLY)
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: "Goal Glow — Bilan Hebdomadaire 🎯",
-          body: "C'est la fin de la semaine ! Faites le point sur vos défis et validez vos économies. 📈",
-          sound: true,
-        },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
-          weekday: 1, // Sunday
-          hour: hour,
-          minute: minute,
-        },
-      });
+      // Schedule 4 weekly reminders (once a week for 4 weeks) with different weekly quotes
+      for (let i = 0; i < 4; i++) {
+        const triggerDate = new Date();
+        triggerDate.setDate(triggerDate.getDate() + i * 7);
+        // Find next Sunday (or preferred weekday)
+        const currentDay = triggerDate.getDay();
+        const distanceToSunday = (7 - currentDay) % 7;
+        triggerDate.setDate(triggerDate.getDate() + distanceToSunday);
+        triggerDate.setHours(hour, minute, 0, 0);
+
+        if (triggerDate.getTime() <= Date.now()) {
+          triggerDate.setDate(triggerDate.getDate() + 7);
+        }
+
+        const quote = WEEKLY_QUOTES[i % WEEKLY_QUOTES.length];
+
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "Défi Épargne — Bilan Hebdomadaire 🎯",
+            body: quote,
+            sound: true,
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: triggerDate,
+          },
+        });
+      }
     }
   },
 
@@ -120,6 +188,22 @@ export const notificationService = {
       content: {
         title: "Félicitations ! 🎉",
         body: `Vous avez déposé ${amountFormatted} pour votre défi "${challengeName}". Chaque petit pas compte ! 🚀`,
+        sound: true,
+      },
+      trigger: null, // Send immediately
+    });
+  },
+
+  async sendExportNotification(fileName: string, format: string): Promise<void> {
+    if (Platform.OS === "web") return;
+    
+    const hasPermission = await this.requestPermissions();
+    if (!hasPermission) return;
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "Export réussi ! 📥",
+        body: `Le fichier "${fileName}" (${format}) a été enregistré avec succès.`,
         sound: true,
       },
       trigger: null, // Send immediately

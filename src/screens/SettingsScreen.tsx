@@ -33,6 +33,7 @@ export default function SettingsScreen({ navigation }: any) {
   const [notificationHour, setNotificationHour] = useState(String(profile?.notification_hour ?? 20));
   const [notificationMinute, setNotificationMinute] = useState(String(profile?.notification_minute ?? 0));
   const [notificationFrequency, setNotificationFrequency] = useState<"daily" | "twice_daily" | "weekly">(profile?.notification_frequency ?? "daily");
+  const [pinCode, setPinCode] = useState(profile?.pin_code || "");
 
   const [showCurrencyDropdown, setShowCurrencyDropdown] = useState(false);
 
@@ -53,6 +54,7 @@ export default function SettingsScreen({ navigation }: any) {
         notification_hour: hourNum,
         notification_minute: minNum,
         notification_frequency: notificationFrequency,
+        pin_code: pinCode.trim() || null,
       });
 
       // Schedule or cancel reminders
@@ -79,13 +81,13 @@ export default function SettingsScreen({ navigation }: any) {
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(fileUri, {
           mimeType: "application/json",
-          dialogTitle: "Exporter la sauvegarde Goal Glow",
+          dialogTitle: "Exporter la sauvegarde Défi Épargne",
           UTI: "public.json",
         });
       } else {
         await Share.share({
           message: content,
-          title: "Export Goal Glow DB",
+          title: "Export Défi Épargne DB",
         });
       }
     } catch (e: any) {
@@ -192,6 +194,27 @@ export default function SettingsScreen({ navigation }: any) {
             onChangeText={setAvatarEmoji}
             placeholder="💰"
             maxLength={2}
+          />
+        </View>
+
+        {/* PIN Code Configuration */}
+        <Text style={[styles.sectionTitle, { color: themeColors.foreground }]}>Sécurité (Code PIN)</Text>
+        <View style={[styles.card, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+          <Text style={[styles.label, { color: themeColors.foreground }]}>Code PIN de verrouillage (4 chiffres)</Text>
+          <TextInput
+            style={[styles.input, { color: themeColors.foreground, backgroundColor: themeColors.background, borderColor: themeColors.border, letterSpacing: 5, textAlign: "center" }]}
+            value={pinCode}
+            onChangeText={(text) => {
+              const cleaned = text.replace(/[^0-9]/g, "");
+              if (cleaned.length <= 4) {
+                setPinCode(cleaned);
+              }
+            }}
+            placeholder="Aucun (Laisser vide pour désactiver)"
+            placeholderTextColor={themeColors.mutedForeground}
+            keyboardType="numeric"
+            secureTextEntry={true}
+            maxLength={4}
           />
         </View>
 

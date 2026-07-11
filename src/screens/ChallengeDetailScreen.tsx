@@ -25,6 +25,7 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import * as FileSystem from "expo-file-system/legacy";
 import { notificationService } from "../services/notifications";
+import Confetti from "../components/Confetti";
 
 const { width } = Dimensions.get("window");
 const CARD_MARGIN = 8;
@@ -32,13 +33,188 @@ const NUM_COLUMNS = Math.floor((width - 40) / 80); // fits 80px circles/squares 
 
 export default function ChallengeDetailScreen({ route, navigation }: any) {
   const { id } = route.params;
-  const { profile, challenges, installments, toggleInstallment, deleteChallenge, updateChallenge } = useApp();
+  const { profile, challenges, installments, toggleInstallment, deleteChallenge, updateChallenge, toggleInstallmentsBatch } = useApp();
   const fmt = useMoneyFormatter();
-  const [filter, setFilter] = useState<"all" | "todo" | "done">("all");
 
   const themeColors = COLORS[profile?.theme || "light"];
-
   const challenge = challenges.find((c) => c.id === id);
+
+  const challengeInsts = useMemo(() => {
+    return installments
+      .filter((i) => i.challenge_id === id)
+      .sort((a, b) => a.position - b.position);
+  }, [installments, id]);
+
+  const [filter, setFilter] = useState<"all" | "todo" | "done">("all");
+  const [confettiActive, setConfettiActive] = useState(false);
+  const [autoDepositAmount, setAutoDepositAmount] = useState("");
+
+  const forecastText = useMemo(() => {
+    if (!challenge || challengeInsts.length === 0) return "";
+    
+    const checkedInsts = challengeInsts.filter((i) => i.is_checked);
+    const uncheckedCount = challengeInsts.length - checkedInsts.length;
+
+    if (uncheckedCount === 0) {
+      return "Félicitations ! Ce défi est complété à 100% 🎉";
+    }
+    if (checkedInsts.length === 0) {
+      return "Coche ton premier versement pour démarrer les prévisions ⏱️";
+    }
+
+    const startD = new Date(challenge.start_date);
+    const today = new Date();
+    const diffTime = Math.max(0, today.getTime() - startD.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
+
+    const rhythm = checkedInsts.length / diffDays;
+    
+    if (rhythm <= 0) {
+      return "Coche d'autres versements pour estimer la fin ⏱️";
+    }
+
+    const remainingDays = Math.ceil(uncheckedCount / rhythm);
+    const estDate = new Date();
+    estDate.setDate(today.getDate() + remainingDays);
+
+    const formattedEstDate = estDate.toLocaleDateString("fr-FR", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+
+    return `Fin estimée : ${formattedEstDate} (~${remainingDays} j à ce rythme)`;
+  }, [challengeInsts, challenge?.start_date]);
+
+  const handleAutoDeposit = async () => {
+    if (!challenge) return;
+    
+    const amount = parseInt(autoDepositAmount, 10);
+    if (isNaN(amount) || amount <= 0) {
+      Alert.alert("Erreur", "Veuillez entrer un montant valide supérieur à 0.");
+      return;
+    }
+
+    const unchecked = challengeInsts.filter((i) => !i.is_checked);
+    if (unchecked.length === 0) {
+      Alert.alert("Erreur", "Toutes les cases de ce défi sont déjà cochées !");
+      return;
+    }
+
+    const totalRemaining = unchecked.reduce((sum, i) => sum + i.amount, 0);
+    if (amount > totalRemaining) {
+      Alert.alert(
+        "Montant trop élevé ⚠️",
+        `Le montant saisi (${fmt(amount)}) dépasse le montant total restant à épargner (${fmt(totalRemaining)}).`
+      );
+      return;
+    }
+
+    // Dynamic programming subset-sum solver
+    // dp[w] stores if sum w is possible
+    const dp = new Array(amount + 1).fill(false);
+    dp[0] = true;
+    
+    // parent[w] stores the installment item used to reach sum w
+    const parent = new Array(amount + 1).fill(null);
+
+    for (const inst of unchecked) {
+      const val = inst.amount;
+      for (let w = amount; w >= val; w--) {
+        if (dp[w - val] && !dp[w]) {
+          dp[w] = true;
+          parent[w] = inst;
+        }
+      }
+    }
+
+    // Find the closest sum <= amount
+    let bestSum = amount;
+    while (bestSum > 0 && !dp[bestSum]) {
+      bestSum--;
+    }
+
+    let toCheck: typeof unchecked = [];
+    let scenario: "exact" | "under" | "over" = "exact";
+
+    if (bestSum > 0) {
+      // Reconstruct subset
+      let curr = bestSum;
+      while (curr > 0) {
+        const inst = parent[curr];
+        if (!inst) break;
+        toCheck.push(inst);
+        curr -= inst.amount;
+      }
+      
+      if (bestSum < amount) {
+        scenario = "under";
+      }
+    } else {
+      // Find the smallest single installment that exceeds 'amount'
+      const sortedUnchecked = [...unchecked].sort((a, b) => a.amount - b.amount);
+      const smallestExceeding = sortedUnchecked.find((i) => i.amount >= amount);
+      if (smallestExceeding) {
+        toCheck.push(smallestExceeding);
+        scenario = "over";
+      }
+    }
+
+    if (toCheck.length === 0) {
+      Alert.alert("Aucune combinaison ⚠️", "Aucun versement disponible ne correspond ou ne se rapproche de ce montant.");
+      return;
+    }
+
+    const totalCalculated = toCheck.reduce((sum, i) => sum + i.amount, 0);
+    
+    let alertTitle = "Dépôt Intelligent ⚡";
+    let alertMessage = "";
+
+    if (scenario === "exact") {
+      alertTitle = "Combinaison exacte trouvée ! 🎉";
+      alertMessage = `Nous te proposons de cocher ${toCheck.length} case(s) pour un total exact de ${fmt(totalCalculated)}.\n\nEs-tu sûr ?`;
+    } else if (scenario === "under") {
+      alertTitle = "Combinaison la plus proche (En-dessous) ⏱️";
+      alertMessage = `Nous avons trouvé une combinaison de ${toCheck.length} case(s) pour un montant de ${fmt(totalCalculated)} (Reste non couvert : ${fmt(amount - totalCalculated)}).\n\nEs-tu sûr ?`;
+    } else {
+      alertTitle = "Versement le plus proche (Au-dessus) ⏱️";
+      alertMessage = `Aucune case n'est assez petite pour correspondre. Nous te proposons de cocher 1 case d'un montant de ${fmt(totalCalculated)} (Surplus de : ${fmt(totalCalculated - amount)}).\n\nEs-tu sûr ?`;
+    }
+
+    Alert.alert(
+      alertTitle,
+      alertMessage,
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Confirmer et cocher",
+          onPress: async () => {
+            try {
+              const isCompleting = unchecked.length === toCheck.length;
+
+              const ids = toCheck.map((i) => i.id);
+              await toggleInstallmentsBatch(ids);
+
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+              if (isCompleting) {
+                setConfettiActive(true);
+                setTimeout(() => {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                }, 250);
+              }
+
+              setAutoDepositAmount("");
+              Alert.alert("Succès ✅", `${toCheck.length} versement(s) coché(s) !`);
+            } catch (e) {
+              Alert.alert("Erreur", "Impossible de valider le dépôt.");
+            }
+          },
+        },
+      ]
+    );
+  };
+
   if (!challenge) {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
@@ -52,10 +228,6 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
       </SafeAreaView>
     );
   }
-
-  const challengeInsts = installments
-    .filter((i) => i.challenge_id === id)
-    .sort((a, b) => a.position - b.position);
 
   const [exportFilterActive, setExportFilterActive] = useState(false);
   const [exportStartDate, setExportStartDate] = useState("");
@@ -265,7 +437,7 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
             
             <div class="footer">
               <div>Généré par Défi Épargne — Chaque franc compte</div>
-              <div style="text-align: right;">Goal Glow Mobile</div>
+              <div style="text-align: right;">Défi Épargne Mobile</div>
             </div>
           </div>
         </body>
@@ -288,6 +460,9 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
             encoding: mimeType.includes("pdf") ? FileSystem.EncodingType.Base64 : FileSystem.EncodingType.UTF8,
           });
           Alert.alert("Succès ✅", `Le fichier "${fileName}" a été enregistré avec succès sur votre téléphone !`);
+          
+          const ext = fileName.split(".").pop()?.toUpperCase() || "DOCX";
+          notificationService.sendExportNotification(fileName, ext);
           return;
         }
       }
@@ -296,6 +471,8 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
       await FileSystem.writeAsStringAsync(tempUri, content, { encoding: FileSystem.EncodingType.UTF8 });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(tempUri, { mimeType, dialogTitle: `Enregistrer ${fileName}` });
+        const ext = fileName.split(".").pop()?.toUpperCase() || "DOCX";
+        notificationService.sendExportNotification(fileName, ext);
       } else {
         Alert.alert("Erreur", "Le partage n'est pas disponible sur cet appareil.");
       }
@@ -310,11 +487,12 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
       const html = getHTMLContent();
       const { uri } = await Print.printToFileAsync({ html });
 
+      const pdfFileName = `defi-${challenge.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.pdf`;
+
       if (Platform.OS === "android") {
         const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
         if (permissions.granted) {
           const pdfBase64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-          const pdfFileName = `defi-${challenge.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.pdf`;
           const newFileUri = await FileSystem.StorageAccessFramework.createFileAsync(
             permissions.directoryUri,
             pdfFileName,
@@ -322,13 +500,15 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
           );
           await FileSystem.writeAsStringAsync(newFileUri, pdfBase64, { encoding: FileSystem.EncodingType.Base64 });
           Alert.alert("Succès ✅", `Le rapport PDF "${pdfFileName}" a été enregistré sur votre téléphone !`);
+          notificationService.sendExportNotification(pdfFileName, "PDF");
           return;
         }
       }
       // Fallback
-      const newUri = FileSystem.cacheDirectory + `defi-${challenge.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.pdf`;
+      const newUri = FileSystem.cacheDirectory + pdfFileName;
       await FileSystem.moveAsync({ from: uri, to: newUri });
       await Sharing.shareAsync(newUri, { mimeType: "application/pdf", dialogTitle: "Exporter en PDF" });
+      notificationService.sendExportNotification(pdfFileName, "PDF");
     } catch (e) {
       Alert.alert("Erreur", "Impossible d'exporter en PDF.");
     }
@@ -336,39 +516,9 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
 
   const handleExportWord = async () => {
     try {
-      const exportSaved = exportFilterActive
-        ? exportInsts.filter((i) => i.is_checked).reduce((sum, i) => sum + i.amount, 0)
-        : saved;
-      const exportPct = Math.min(100, Math.round((exportSaved / challenge.target_amount) * 100));
-
-      const formattedTarget = fmt(challenge.target_amount);
-      const formattedSaved = fmt(exportSaved);
-      const progressPercent = exportPct;
-
-      let rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fnil\\fcharset0 Arial;}}\n";
-      rtf += "\\viewkind4\\uc1\\pard\\lang1036\\f0\\fs28\\b GOAL GLOW - RAPPORT D'EPARGNE\\b0\\fs20\\par\n";
-      rtf += "==================================================\\par\\par\n";
-      rtf += `\\b Defi :\\b0 ${challenge.name}\\par\n`;
-      rtf += `\\b Statut :\\b0 ${progressPercent >= 100 ? "Complete" : "En cours"}\\par\n`;
-      rtf += `\\b Objectif total :\\b0 ${formattedTarget}\\par\n`;
-      rtf += `\\b Deja epargne :\\b0 ${formattedSaved} (${progressPercent}%)\\par\n`;
-      if (exportFilterActive) {
-        rtf += `\\b Filtre actif :\\b0 Du ${exportStartDate || "debut"} au ${exportEndDate || "aujourd'hui"}\\par\n`;
-      }
-      rtf += "--------------------------------------------------\\par\\par\n";
-      rtf += "\\b LISTE DES VERSEMENTS\\b0\\par\\par\n";
-
-      exportInsts.forEach((inst, index) => {
-        const dateStr = inst.checked_at 
-          ? new Date(inst.checked_at).toLocaleDateString("fr-FR")
-          : "-";
-        rtf += `Tranche ${index + 1} : ${fmt(inst.amount)}  -  [${inst.is_checked ? "COCHE" : "A FAIRE"}]  -  Date : ${dateStr}\\par\n`;
-      });
-
-      rtf += "}";
-
-      const fileName = `defi-${challenge.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.rtf`;
-      await saveFileToDevice(fileName, rtf, "application/rtf");
+      const html = getHTMLContent();
+      const fileName = `defi-${challenge.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.docx`;
+      await saveFileToDevice(fileName, html, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     } catch (e) {
       Alert.alert("Erreur", "Impossible d'exporter en Word.");
     }
@@ -402,11 +552,11 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
       const emptyBlocks = 10 - filledBlocks;
       const bar = "🟩".repeat(filledBlocks) + "⬜".repeat(emptyBlocks);
 
-      const shareMessage = `Goal Glow 🎯\n` +
+      const shareMessage = `Défi Épargne 🎯\n` +
         `Mon défi : ${challenge.emoji || "🎯"} *${challenge.name}*\n` +
         `Progression : ${bar} ${progressPercent}%\n` +
         `Épargné : ${fmt(saved)} / ${fmt(challenge.target_amount)} (${checkedCount}/${totalCount} versements)\n\n` +
-        `Rejoins-moi sur Goal Glow pour épargner malin ! ✨`;
+        `Rejoins-moi sur Défi Épargne pour épargner malin ! ✨`;
 
       await Share.share({
         message: shareMessage,
@@ -431,7 +581,18 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
 
       // Trigger haptic feedback for satisfying user action
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      const uncheckedCount = challengeInsts.filter((i) => !i.is_checked).length;
+      const isCompleting = !wasChecked && uncheckedCount === 1;
+
       await toggleInstallment(instId);
+
+      if (isCompleting) {
+        setConfettiActive(true);
+        setTimeout(() => {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }, 250);
+      }
 
       if (inst && !wasChecked && profile?.notifications_enabled) {
         notificationService.sendCongratsNotification(challenge.name, fmt(inst.amount));
@@ -538,7 +699,88 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
                   <Text style={styles.statValue}>{fmt(challenge.target_amount)}</Text>
                 </View>
               </View>
+
+              {/* Forecast text */}
+              <View style={{ borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.15)", marginTop: 15, paddingTop: 10 }}>
+                <Text style={{ fontSize: 11, color: "rgba(255,255,255,0.9)", fontWeight: "600", textAlign: "center" }}>
+                  ⏱️ {forecastText}
+                </Text>
+              </View>
             </LinearGradient>
+
+            {/* Auto-deposit Card */}
+            {challenge.status === "active" && (
+              <View style={{ backgroundColor: themeColors.card, borderColor: themeColors.border, padding: 15, marginTop: 10, borderRadius: 16, borderWidth: 1 }}>
+                <Text style={{ fontSize: 13, fontWeight: "bold", color: themeColors.foreground, marginBottom: 2 }}>
+                  ⚡ Auto-Dépôt Intelligent
+                </Text>
+                <Text style={{ fontSize: 11, color: themeColors.mutedForeground, marginBottom: 12 }}>
+                  Saisis une somme globale et l'application cochera automatiquement les meilleures cases correspondantes.
+                </Text>
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  <TextInput
+                    style={{
+                      flex: 1,
+                      color: themeColors.foreground,
+                      backgroundColor: themeColors.background,
+                      borderColor: themeColors.border,
+                      height: 40,
+                      borderRadius: 10,
+                      borderWidth: 1,
+                      paddingHorizontal: 12,
+                      fontSize: 13,
+                    }}
+                    placeholder="Montant à déposer..."
+                    placeholderTextColor={themeColors.mutedForeground}
+                    keyboardType="numeric"
+                    value={autoDepositAmount}
+                    onChangeText={setAutoDepositAmount}
+                  />
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: themeColors.primary,
+                      justifyContent: "center",
+                      alignItems: "center",
+                      paddingHorizontal: 16,
+                      borderRadius: 10,
+                      height: 40,
+                    }}
+                    onPress={handleAutoDeposit}
+                  >
+                    <Text style={{ color: "white", fontSize: 13, fontWeight: "bold" }}>Valider</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {/* Congratulations Card on Completion */}
+            {challenge.status === "completed" && (
+              <View style={{ backgroundColor: `${themeColors.secondary}15`, borderColor: themeColors.secondary, padding: 20, marginTop: 10, borderRadius: 16, borderWidth: 1, alignItems: "center" }}>
+                <Text style={{ fontSize: 24, marginBottom: 5 }}>🏆</Text>
+                <Text style={{ fontSize: 15, fontWeight: "bold", color: themeColors.secondary, textAlign: "center", marginBottom: 4 }}>
+                  Félicitations, défi accompli ! 🎉
+                </Text>
+                <Text style={{ fontSize: 12, color: themeColors.mutedForeground, textAlign: "center", marginBottom: 15, lineHeight: 18 }}>
+                  Tu as épargné la totalité de ton objectif de {fmt(challenge.target_amount)}. C'est un exploit incroyable, bravo pour ta discipline !
+                </Text>
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: themeColors.secondary,
+                    justifyContent: "center",
+                    alignItems: "center",
+                    paddingHorizontal: 20,
+                    height: 40,
+                    borderRadius: 20,
+                    width: "100%",
+                  }}
+                  onPress={() => {
+                    navigation.navigate("Dashboard");
+                  }}
+                >
+                  <Text style={{ color: "white", fontSize: 13, fontWeight: "bold" }}>Terminer et retourner à l'accueil</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             {/* Filter Exports Card */}
             <View style={{ backgroundColor: themeColors.card, borderColor: themeColors.border, padding: 15, marginTop: 10, marginBottom: 15, borderRadius: 16, borderWidth: 1 }}>
@@ -730,6 +972,7 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
           );
         }}
       />
+      <Confetti active={confettiActive} onAnimationEnd={() => setConfettiActive(false)} />
     </SafeAreaView>
   );
 }

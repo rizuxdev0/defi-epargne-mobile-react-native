@@ -5,7 +5,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView, Platform,
+  SafeAreaView, Platform, StatusBar,
   TextInput,
   Switch,
   Alert,
@@ -485,6 +485,7 @@ export default function NewChallengeScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 24) + 10 : 0,
   },
   header: {
     flexDirection: "row",
