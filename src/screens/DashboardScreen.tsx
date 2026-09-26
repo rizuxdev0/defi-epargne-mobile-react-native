@@ -5,11 +5,13 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView, Platform,
+  Platform,
   StatusBar,
   Dimensions,
+  TextInput,
 } from "react-native";
-import { Plus, Flame, Trophy, Sparkles, Settings, MessageSquare, History } from "lucide-react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { Plus, Flame, Trophy, Sparkles, Settings, MessageSquare, History, Search, X, Eye, EyeOff, TrendingUp } from "lucide-react-native";
 import { useApp } from "../services/AppContext";
 import { useMoneyFormatter } from "../hooks/useMoneyFormatter";
 import { useGamification } from "../hooks/useGamification";
@@ -17,6 +19,7 @@ import { COLORS } from "../lib/theme";
 import { getCategory } from "../lib/categories";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Path, Circle, Defs, LinearGradient as SvgLinearGradient, Stop } from "react-native-svg";
+import CompoundInterestModal from "../components/CompoundInterestModal";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const CHART_WIDTH = SCREEN_WIDTH - 80;
@@ -37,12 +40,17 @@ const CATEGORY_COLORS: { [key: string]: string } = {
 };
 
 export default function DashboardScreen({ navigation }: any) {
-  const { profile, challenges, installments } = useApp();
+  const { profile, challenges, installments, toggleBalanceHidden } = useApp();
   const fmt = useMoneyFormatter();
   const { gamification } = useGamification();
   const [filter, setFilter] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [compoundModalVisible, setCompoundModalVisible] = useState(false);
 
   const themeColors = COLORS[profile?.theme || "light"];
+
+  const isHidden = !!profile?.balance_hidden;
+  const formatMoney = (amount: number) => (isHidden ? "••••" : fmt(amount));
 
   const activeChallenges = React.useMemo(() => {
     return challenges
@@ -59,9 +67,12 @@ export default function DashboardScreen({ navigation }: any) {
       });
   }, [challenges, installments]);
 
+  // Total saved takes into account all deposits ever made across all challenges (active, completed, etc.)
   const totalSaved = React.useMemo(() => {
-    return activeChallenges.reduce((s, c) => s + c.saved, 0);
-  }, [activeChallenges]);
+    return installments
+      .filter((i) => i.is_checked)
+      .reduce((s, i) => s + i.amount, 0);
+  }, [installments]);
 
   const donutData = React.useMemo(() => {
     const stats: { [key: string]: number } = {};
@@ -139,9 +150,15 @@ export default function DashboardScreen({ navigation }: any) {
     new Set(activeChallenges.map((c) => c.category).filter(Boolean) as string[]),
   );
 
-  const visibleChallenges = filter
-    ? activeChallenges.filter((c) => c.category === filter)
-    : activeChallenges;
+  const visibleChallenges = React.useMemo(() => {
+    return activeChallenges.filter((c) => {
+      const matchCat = filter ? c.category === filter : true;
+      const matchSearch = searchQuery.trim()
+        ? c.name.toLowerCase().includes(searchQuery.toLowerCase().trim())
+        : true;
+      return matchCat && matchSearch;
+    });
+  }, [activeChallenges, filter, searchQuery]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
@@ -153,11 +170,27 @@ export default function DashboardScreen({ navigation }: any) {
           <Text style={[styles.welcome, { color: themeColors.foreground }]}>
             Bonjour {profile?.first_name || "👋"}
           </Text>
-          <Text style={[styles.subWelcome, { color: themeColors.mutedForeground }]}>
-            Total épargné : <Text style={{ color: themeColors.primary, fontWeight: "bold" }}>{fmt(totalSaved)}</Text>
-          </Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
+            <Text style={[styles.subWelcome, { color: themeColors.mutedForeground }]}>
+              Total épargné : <Text style={{ color: themeColors.primary, fontWeight: "bold" }}>{formatMoney(totalSaved)}</Text>
+            </Text>
+            <TouchableOpacity onPress={toggleBalanceHidden} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              {isHidden ? (
+                <EyeOff size={16} color={themeColors.mutedForeground} />
+              ) : (
+                <Eye size={16} color={themeColors.mutedForeground} />
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
         <View style={styles.headerButtons}>
+          <TouchableOpacity
+            style={[styles.iconButton, { backgroundColor: themeColors.card }]}
+            onPress={() => setCompoundModalVisible(true)}
+            accessibilityLabel="Simulateur d'intérêts"
+          >
+            <TrendingUp size={20} color={themeColors.primary} />
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.iconButton, { backgroundColor: themeColors.card }]}
             onPress={() => navigation.navigate("Settings")}
@@ -172,17 +205,26 @@ export default function DashboardScreen({ navigation }: any) {
         {gamification && (
           <View style={[styles.gamificationCard, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
             <View style={styles.gRow}>
-              <LinearGradient
-                colors={themeColors.gradientBrand}
-                style={styles.levelBadge}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+              <TouchableOpacity
+                onPress={() => navigation.navigate("Badges")}
+                activeOpacity={0.8}
               >
-                <Text style={styles.levelBadgeText}>Niv.</Text>
-                <Text style={styles.levelBadgeNum}>{gamification.level}</Text>
-              </LinearGradient>
+                <LinearGradient
+                  colors={themeColors.gradientBrand}
+                  style={styles.levelBadge}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                >
+                  <Text style={styles.levelBadgeText}>Niv.</Text>
+                  <Text style={styles.levelBadgeNum}>{gamification.level}</Text>
+                </LinearGradient>
+              </TouchableOpacity>
 
-              <View style={styles.levelInfo}>
+              <TouchableOpacity
+                style={styles.levelInfo}
+                onPress={() => navigation.navigate("Badges")}
+                activeOpacity={0.8}
+              >
                 <View style={styles.levelLabelRow}>
                   <Sparkles size={14} color={themeColors.primary} />
                   <Text style={[styles.levelLabel, { color: themeColors.foreground }]}>
@@ -192,19 +234,22 @@ export default function DashboardScreen({ navigation }: any) {
                 <Text style={[styles.xpText, { color: themeColors.mutedForeground }]}>
                   {gamification.xp} / {gamification.xpForNext} versements
                 </Text>
-              </View>
+              </TouchableOpacity>
 
               <View style={styles.statBadges}>
                 <View style={[styles.statBadge, { backgroundColor: `${themeColors.accent}15` }]}>
                   <Flame size={16} color={themeColors.accent} />
                   <Text style={[styles.statBadgeText, { color: themeColors.accent }]}>{gamification.streak}</Text>
                 </View>
-                <View style={[styles.statBadge, { backgroundColor: `${themeColors.secondary}15` }]}>
+                <TouchableOpacity
+                  style={[styles.statBadge, { backgroundColor: `${themeColors.secondary}15` }]}
+                  onPress={() => navigation.navigate("Badges")}
+                >
                   <Trophy size={16} color={themeColors.secondary} />
                   <Text style={[styles.statBadgeText, { color: themeColors.secondary }]}>
                     {gamification.completedChallenges}
                   </Text>
-                </View>
+                </TouchableOpacity>
               </View>
             </View>
 
@@ -219,10 +264,17 @@ export default function DashboardScreen({ navigation }: any) {
             </View>
 
             {/* Badges List */}
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 15, marginBottom: 6 }}>
+              <Text style={{ fontSize: 12, fontWeight: "600", color: themeColors.mutedForeground }}>Trophées & Succès</Text>
+              <TouchableOpacity onPress={() => navigation.navigate("Badges")}>
+                <Text style={{ fontSize: 11, fontWeight: "700", color: themeColors.primary }}>Voir tout →</Text>
+              </TouchableOpacity>
+            </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.badgesScroll}>
               {gamification.badges.map((b) => (
-                <View
+                <TouchableOpacity
                   key={b.id}
+                  onPress={() => navigation.navigate("Badges")}
                   style={[
                     styles.badgeContainer,
                     {
@@ -236,7 +288,7 @@ export default function DashboardScreen({ navigation }: any) {
                   <Text style={[styles.badgeLabel, { color: b.unlocked ? themeColors.foreground : themeColors.mutedForeground }]}>
                     {b.label}
                   </Text>
-                </View>
+                </TouchableOpacity>
               ))}
             </ScrollView>
           </View>
@@ -282,7 +334,7 @@ export default function DashboardScreen({ navigation }: any) {
                 <View style={{ position: "absolute", alignItems: "center" }}>
                   <Text style={{ fontSize: 9, color: themeColors.mutedForeground, textTransform: "uppercase", fontWeight: "700" }}>Total</Text>
                   <Text style={{ fontSize: 13, fontWeight: "bold", color: themeColors.foreground }}>
-                    {donutData.length === 0 ? "0" : fmt(totalSaved).split(" ")[0]}
+                    {donutData.length === 0 ? "0" : (isHidden ? "••••" : fmt(totalSaved).split(" ")[0])}
                   </Text>
                 </View>
               </View>
@@ -344,7 +396,7 @@ export default function DashboardScreen({ navigation }: any) {
             <View style={styles.chartLegend}>
               <Text style={{ fontSize: 10, color: themeColors.mutedForeground }}>Début</Text>
               <Text style={{ fontSize: 10, color: themeColors.mutedForeground, fontWeight: "bold" }}>
-                Total cumulé : {fmt(totalSaved)}
+                Total cumulé : {formatMoney(totalSaved)}
               </Text>
             </View>
           </View>
@@ -388,6 +440,25 @@ export default function DashboardScreen({ navigation }: any) {
             })}
           </ScrollView>
         )}
+
+        {/* Search Bar & Title Header */}
+        <View style={styles.searchSection}>
+          <View style={[styles.searchBarContainer, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+            <Search size={18} color={themeColors.mutedForeground} style={{ marginRight: 8 }} />
+            <TextInput
+              style={[styles.searchInput, { color: themeColors.foreground }]}
+              placeholder="Rechercher un défi..."
+              placeholderTextColor={themeColors.mutedForeground}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery("")}>
+                <X size={16} color={themeColors.mutedForeground} />
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
 
         {/* Challenges Grid */}
         <Text style={[styles.sectionTitle, { color: themeColors.foreground }]}>Mes Défis actifs</Text>
@@ -433,7 +504,7 @@ export default function DashboardScreen({ navigation }: any) {
                         {c.name}
                       </Text>
                       <Text style={[styles.cCardMeta, { color: themeColors.mutedForeground }]}>
-                        {cat && `${cat.emoji} ${cat.label} · `}Objectif {fmt(c.target_amount)}
+                        {cat && `${cat.emoji} ${cat.label} · `}Objectif {formatMoney(c.target_amount)}
                       </Text>
                     </View>
                     <Text style={[styles.cCardPct, { color: themeColors.primary }]}>{pct}%</Text>
@@ -450,7 +521,7 @@ export default function DashboardScreen({ navigation }: any) {
 
                   <View style={styles.cCardFooter}>
                     <Text style={[styles.cSavedText, { color: themeColors.foreground }]}>
-                      {fmt(c.saved)}
+                      {formatMoney(c.saved)}
                     </Text>
                     <Text style={[styles.cVersText, { color: themeColors.mutedForeground }]}>
                       {c.checked_installments}/{c.total_installments} tranches
@@ -483,6 +554,13 @@ export default function DashboardScreen({ navigation }: any) {
           <Plus size={28} color="white" />
         </LinearGradient>
       </TouchableOpacity>
+
+      {/* Compound Interest Simulator Modal */}
+      <CompoundInterestModal
+        visible={compoundModalVisible}
+        onClose={() => setCompoundModalVisible(false)}
+        currentSaved={totalSaved}
+      />
     </SafeAreaView>
   );
 }
@@ -783,5 +861,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     marginTop: 8,
+  },
+  searchSection: {
+    marginTop: 15,
+    marginBottom: 5,
+  },
+  searchBarContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    height: 44,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    paddingVertical: 0,
   },
 });

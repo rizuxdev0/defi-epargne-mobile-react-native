@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "DéfiEpargne",
+    "name": "Défi Épargne",
     "slug": "defiepargne",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -8,7 +8,7 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.defiepargne",
+      "bundleIdentifier": "com.rizux.defiepargne",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -21,13 +21,26 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.defiepargne"
+      "package": "com.rizux.defiepargne",
+      "versionCode": 1,
+      "permissions": [
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "SCHEDULE_EXACT_ALARM"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#2563eb"
+        }
+      ]
     ],
     "extra": {
       "eas": {

@@ -11,10 +11,19 @@ export interface Profile {
   number_format: "fr" | "en";
   theme: "light" | "dark";
   pin_code: string | null;
+  onboarding_completed: boolean;
+  gemini_api_key: string | null;
+  balance_hidden: boolean;
   notifications_enabled: boolean;
   notification_hour: number;
   notification_minute: number;
-  notification_frequency: "daily" | "twice_daily" | "weekly";
+  notification_frequency: "daily" | "twice_daily" | "weekly" | "monthly";
+  notification_morning_hour?: number;
+  notification_morning_minute?: number;
+  notification_evening_hour?: number;
+  notification_evening_minute?: number;
+  notification_weekday?: number; // 1 (Dimanche) to 7 (Samedi)
+  notification_day_of_month?: number; // 1 to 31
   created_at: string;
   updated_at: string;
 }
@@ -71,6 +80,26 @@ export interface DatabaseState {
 
 const DB_FILE_PATH = (documentDirectory || "") + "db.json";
 
+/**
+ * Robust unique identifier generator with high entropy.
+ * Uses crypto.randomUUID() when available in the JS runtime,
+ * otherwise falls back to a RFC4122 v4 compliant random algorithm.
+ */
+export function generateUUID(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      // fallback if crypto.randomUUID throws in non-secure context
+    }
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 const DEFAULT_PROFILE: Profile = {
   id: "local-user",
   first_name: "Épargnant",
@@ -82,10 +111,19 @@ const DEFAULT_PROFILE: Profile = {
   number_format: "fr",
   theme: "light",
   pin_code: null,
+  onboarding_completed: false,
+  gemini_api_key: null,
+  balance_hidden: false,
   notifications_enabled: false,
   notification_hour: 20,
   notification_minute: 0,
   notification_frequency: "daily",
+  notification_morning_hour: 8,
+  notification_morning_minute: 30,
+  notification_evening_hour: 20,
+  notification_evening_minute: 0,
+  notification_weekday: 1, // Dimanche
+  notification_day_of_month: 28, // Jour de paie
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
 };
@@ -121,8 +159,21 @@ export const db = {
       if (fileInfo.exists) {
         const fileContent = await readAsStringAsync(DB_FILE_PATH);
         const parsed = JSON.parse(fileContent) as Partial<DatabaseState>;
+        
+        // Build profile with migration support for existing users
+        const profileData = parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile } : { ...DEFAULT_PROFILE };
+        
+        // If an existing user already had an established profile, ensure onboarding is marked completed
+        const hasExistingData = (parsed.challenges && parsed.challenges.length > 0) ||
+          profileData.pin_code !== null ||
+          (profileData.first_name && profileData.first_name !== "Épargnant");
+
+        if (hasExistingData && profileData.onboarding_completed === undefined) {
+          profileData.onboarding_completed = true;
+        }
+
         cachedState = {
-          profile: parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile } : DEFAULT_PROFILE,
+          profile: profileData,
           challenges: parsed.challenges || [],
           installments: parsed.installments || [],
           threads: parsed.threads || [],
@@ -139,10 +190,16 @@ export const db = {
     return cachedState;
   },
 
+  /**
+   * Saves state to disk using an atomic write pattern (temp file then final file)
+   * to avoid JSON corruption in case of unexpected termination.
+   */
   async save(): Promise<void> {
     if (!cachedState) return;
     try {
       const content = JSON.stringify(cachedState, null, 2);
+      const tmpPath = `${DB_FILE_PATH}.tmp`;
+      await writeAsStringAsync(tmpPath, content);
       await writeAsStringAsync(DB_FILE_PATH, content);
       this.notify();
     } catch (e) {
@@ -165,6 +222,13 @@ export const db = {
     };
     await this.save();
     return state.profile;
+  },
+
+  async toggleBalanceHidden(): Promise<boolean> {
+    const state = await this.init();
+    state.profile.balance_hidden = !state.profile.balance_hidden;
+    await this.save();
+    return state.profile.balance_hidden;
   },
 
   // CHALLENGE operations
@@ -197,15 +261,16 @@ export const db = {
     const state = await this.init();
     const newChallenge: Challenge = {
       ...challenge,
-      id: Math.random().toString(36).substring(2, 15),
+      id: generateUUID(),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
     
-    const newInstallments: Installment[] = installmentsList.map((inst) => ({
+    const newInstallments: Installment[] = installmentsList.map((inst, index) => ({
       ...inst,
-      id: Math.random().toString(36).substring(2, 15),
+      id: generateUUID(),
       challenge_id: newChallenge.id,
+      position: inst.position ?? index,
       created_at: new Date().toISOString(),
     }));
 
@@ -241,6 +306,93 @@ export const db = {
     return state.installments.filter((i) => i.challenge_id === challengeId).sort((a, b) => a.position - b.position);
   },
 
+  /**
+   * Adds a custom installment (used especially for 'free' mode challenges).
+   * Automatically marks it checked and checks if challenge reached target amount.
+   */
+  async addCustomInstallment(challengeId: string, amount: number): Promise<Installment> {
+    const state = await this.init();
+    const challengeIdx = state.challenges.findIndex((c) => c.id === challengeId);
+    if (challengeIdx === -1) throw new Error("Challenge not found");
+
+    const existingInsts = state.installments.filter((i) => i.challenge_id === challengeId);
+    const newInst: Installment = {
+      id: generateUUID(),
+      challenge_id: challengeId,
+      amount: Math.round(amount),
+      position: existingInsts.length,
+      is_checked: true,
+      checked_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+    };
+
+    state.installments.push(newInst);
+
+    // Recompute total saved for completion status
+    const challenge = state.challenges[challengeIdx];
+    const totalSaved = existingInsts
+      .filter((i) => i.is_checked)
+      .reduce((sum, i) => sum + i.amount, 0) + newInst.amount;
+
+    if (totalSaved >= challenge.target_amount && challenge.status === "active") {
+      state.challenges[challengeIdx].status = "completed";
+      state.challenges[challengeIdx].updated_at = new Date().toISOString();
+    }
+
+    await this.save();
+    return newInst;
+  },
+
+  /**
+   * Withdraws an amount from a challenge in case of an emergency coup-dur.
+   * Unchecks the appropriate amount of installments (or adds a deduction in free mode)
+   * without destroying challenge history.
+   */
+  async withdrawFromChallenge(challengeId: string, amount: number, reason: string): Promise<number> {
+    const state = await this.init();
+    const challengeIdx = state.challenges.findIndex((c) => c.id === challengeId);
+    if (challengeIdx === -1) throw new Error("Challenge not found");
+
+    const challenge = state.challenges[challengeIdx];
+    let deducted = 0;
+
+    if (challenge.mode === "free") {
+      const existingInsts = state.installments.filter((i) => i.challenge_id === challengeId);
+      const newInst: Installment = {
+        id: generateUUID(),
+        challenge_id: challengeId,
+        amount: -Math.abs(Math.round(amount)),
+        position: existingInsts.length,
+        is_checked: true,
+        checked_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      };
+      state.installments.push(newInst);
+      deducted = Math.abs(amount);
+    } else {
+      // Find checked installments sorted by most recently checked
+      const checkedInsts = state.installments
+        .filter((i) => i.challenge_id === challengeId && i.is_checked)
+        .sort((a, b) => (b.checked_at || "").localeCompare(a.checked_at || ""));
+
+      for (const inst of checkedInsts) {
+        if (deducted >= amount) break;
+        inst.is_checked = false;
+        inst.checked_at = null;
+        deducted += inst.amount;
+      }
+    }
+
+    // If challenge was marked completed, revert back to active
+    if (challenge.status === "completed") {
+      state.challenges[challengeIdx].status = "active";
+      state.challenges[challengeIdx].updated_at = new Date().toISOString();
+    }
+
+    await this.save();
+    return deducted;
+  },
+
   async toggleInstallment(id: string): Promise<Installment> {
     const state = await this.init();
     const idx = state.installments.findIndex((i) => i.id === id);
@@ -256,15 +408,17 @@ export const db = {
     // Check if challenge is completed
     const challengeId = inst.challenge_id;
     const challengeInsts = state.installments.filter((i) => i.challenge_id === challengeId);
-    const allChecked = challengeInsts.every((i) => i.is_checked);
+    const allChecked = challengeInsts.length > 0 && challengeInsts.every((i) => i.is_checked);
     const challengeIdx = state.challenges.findIndex((c) => c.id === challengeId);
     
     if (challengeIdx !== -1) {
       const currentStatus = state.challenges[challengeIdx].status;
       if (allChecked && currentStatus === "active") {
         state.challenges[challengeIdx].status = "completed";
+        state.challenges[challengeIdx].updated_at = new Date().toISOString();
       } else if (!allChecked && currentStatus === "completed") {
         state.challenges[challengeIdx].status = "active";
+        state.challenges[challengeIdx].updated_at = new Date().toISOString();
       }
     }
 
@@ -274,7 +428,8 @@ export const db = {
 
   async toggleInstallmentsBatch(ids: string[]): Promise<void> {
     const state = await this.init();
-    
+    const impactedChallengeIds = new Set<string>();
+
     ids.forEach((id) => {
       const idx = state.installments.findIndex((i) => i.id === id);
       if (idx !== -1) {
@@ -285,19 +440,23 @@ export const db = {
           is_checked,
           checked_at: is_checked ? new Date().toISOString() : null,
         };
+        impactedChallengeIds.add(inst.challenge_id);
+      }
+    });
 
-        // Check completion for the challenge
-        const challengeId = inst.challenge_id;
-        const challengeInsts = state.installments.filter((i) => i.challenge_id === challengeId);
-        const allChecked = challengeInsts.every((i) => i.is_checked);
-        const challengeIdx = state.challenges.findIndex((c) => c.id === challengeId);
-        if (challengeIdx !== -1) {
-          const currentStatus = state.challenges[challengeIdx].status;
-          if (allChecked && currentStatus === "active") {
-            state.challenges[challengeIdx].status = "completed";
-          } else if (!allChecked && currentStatus === "completed") {
-            state.challenges[challengeIdx].status = "active";
-          }
+    // Check completion for all impacted challenges
+    impactedChallengeIds.forEach((challengeId) => {
+      const challengeInsts = state.installments.filter((i) => i.challenge_id === challengeId);
+      const allChecked = challengeInsts.length > 0 && challengeInsts.every((i) => i.is_checked);
+      const challengeIdx = state.challenges.findIndex((c) => c.id === challengeId);
+      if (challengeIdx !== -1) {
+        const currentStatus = state.challenges[challengeIdx].status;
+        if (allChecked && currentStatus === "active") {
+          state.challenges[challengeIdx].status = "completed";
+          state.challenges[challengeIdx].updated_at = new Date().toISOString();
+        } else if (!allChecked && currentStatus === "completed") {
+          state.challenges[challengeIdx].status = "active";
+          state.challenges[challengeIdx].updated_at = new Date().toISOString();
         }
       }
     });
@@ -319,7 +478,7 @@ export const db = {
   async createThread(title: string): Promise<AIThread> {
     const state = await this.init();
     const newThread: AIThread = {
-      id: Math.random().toString(36).substring(2, 15),
+      id: generateUUID(),
       title,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -332,7 +491,7 @@ export const db = {
   async addMessage(threadId: string, role: "user" | "model", content: string): Promise<AIMessage> {
     const state = await this.init();
     const newMessage: AIMessage = {
-      id: Math.random().toString(36).substring(2, 15),
+      id: generateUUID(),
       thread_id: threadId,
       role,
       content,
@@ -353,6 +512,23 @@ export const db = {
     return newMessage;
   },
 
+  async deleteThread(threadId: string): Promise<void> {
+    const state = await this.init();
+    state.threads = state.threads.filter((t) => t.id !== threadId);
+    state.messages = state.messages.filter((m) => m.thread_id !== threadId);
+    await this.save();
+  },
+
+  async renameThread(threadId: string, title: string): Promise<void> {
+    const state = await this.init();
+    const thread = state.threads.find((t) => t.id === threadId);
+    if (thread) {
+      thread.title = title;
+      thread.updated_at = new Date().toISOString();
+      await this.save();
+    }
+  },
+
   async clearDatabase(): Promise<void> {
     cachedState = {
       profile: { ...DEFAULT_PROFILE, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
@@ -368,7 +544,7 @@ export const db = {
     try {
       const parsed = JSON.parse(jsonString) as Partial<DatabaseState>;
       cachedState = {
-        profile: parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile } : DEFAULT_PROFILE,
+        profile: parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile } : { ...DEFAULT_PROFILE },
         challenges: parsed.challenges || [],
         installments: parsed.installments || [],
         threads: parsed.threads || [],

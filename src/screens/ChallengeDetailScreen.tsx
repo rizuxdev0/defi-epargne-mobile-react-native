@@ -5,7 +5,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView, Platform,
+  Platform,
   StatusBar,
   Alert,
   FlatList,
@@ -13,8 +13,33 @@ import {
   Share,
   Switch,
   TextInput,
+  Modal,
 } from "react-native";
-import { ArrowLeft, Trash2, CheckCircle2, Circle, AlertCircle, FileDown, FileSpreadsheet, FileText, Archive, RotateCcw, Share2 } from "lucide-react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import {
+  ArrowLeft,
+  Trash2,
+  CheckCircle2,
+  Circle,
+  AlertCircle,
+  FileDown,
+  FileSpreadsheet,
+  FileText,
+  Archive,
+  RotateCcw,
+  Share2,
+  Plus,
+  ShieldAlert,
+  X,
+  Zap,
+  Calendar,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
+  Download,
+  Clock,
+  Coins,
+} from "lucide-react-native";
 import { useApp } from "../services/AppContext";
 import { useMoneyFormatter } from "../hooks/useMoneyFormatter";
 import { COLORS } from "../lib/theme";
@@ -29,12 +54,25 @@ import Confetti from "../components/Confetti";
 
 const { width } = Dimensions.get("window");
 const CARD_MARGIN = 8;
-const NUM_COLUMNS = Math.floor((width - 40) / 80); // fits 80px circles/squares dynamically
+const NUM_COLUMNS = width > 520 ? 4 : 3;
 
 export default function ChallengeDetailScreen({ route, navigation }: any) {
   const { id } = route.params;
-  const { profile, challenges, installments, toggleInstallment, deleteChallenge, updateChallenge, toggleInstallmentsBatch } = useApp();
+  const {
+    profile,
+    challenges,
+    installments,
+    toggleInstallment,
+    deleteChallenge,
+    updateChallenge,
+    toggleInstallmentsBatch,
+    addCustomInstallment,
+    withdrawFromChallenge,
+  } = useApp();
   const fmt = useMoneyFormatter();
+
+  const isHidden = !!profile?.balance_hidden;
+  const formatMoney = (amount: number) => (isHidden ? "••••" : fmt(amount));
 
   const themeColors = COLORS[profile?.theme || "light"];
   const challenge = challenges.find((c) => c.id === id);
@@ -48,6 +86,16 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
   const [filter, setFilter] = useState<"all" | "todo" | "done">("all");
   const [confettiActive, setConfettiActive] = useState(false);
   const [autoDepositAmount, setAutoDepositAmount] = useState("");
+  const [customDepositAmount, setCustomDepositAmount] = useState("");
+  const [withdrawModalVisible, setWithdrawModalVisible] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [withdrawReason, setWithdrawReason] = useState("Santé 🏥");
+
+  const [exportFilterActive, setExportFilterActive] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState("");
+  const [exportEndDate, setExportEndDate] = useState("");
+  const [exportIncludeUnchecked, setExportIncludeUnchecked] = useState(true);
+  const [exportPanelVisible, setExportPanelVisible] = useState(false);
 
   const forecastText = useMemo(() => {
     if (!challenge || challengeInsts.length === 0) return "";
@@ -110,48 +158,78 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
       return;
     }
 
-    // Dynamic programming subset-sum solver
-    // dp[w] stores if sum w is possible
-    const dp = new Array(amount + 1).fill(false);
-    dp[0] = true;
-    
-    // parent[w] stores the installment item used to reach sum w
-    const parent = new Array(amount + 1).fill(null);
-
-    for (const inst of unchecked) {
-      const val = inst.amount;
-      for (let w = amount; w >= val; w--) {
-        if (dp[w - val] && !dp[w]) {
-          dp[w] = true;
-          parent[w] = inst;
-        }
+    // Fast step/GCD calculation to avoid large memory allocations on devises with large numbers (XOF, JPY, CLP)
+    const gcd = (a: number, b: number): number => {
+      let x = Math.abs(a);
+      let y = Math.abs(b);
+      while (y) {
+        const t = y;
+        y = x % y;
+        x = t;
       }
+      return x || 1;
+    };
+
+    let step = amount;
+    for (const inst of unchecked) {
+      step = gcd(step, inst.amount);
+      if (step === 1) break;
     }
 
-    // Find the closest sum <= amount
-    let bestSum = amount;
-    while (bestSum > 0 && !dp[bestSum]) {
-      bestSum--;
-    }
-
+    const scaledAmount = Math.floor(amount / step);
     let toCheck: typeof unchecked = [];
     let scenario: "exact" | "under" | "over" = "exact";
 
-    if (bestSum > 0) {
-      // Reconstruct subset
-      let curr = bestSum;
-      while (curr > 0) {
-        const inst = parent[curr];
-        if (!inst) break;
-        toCheck.push(inst);
-        curr -= inst.amount;
+    // Dynamic programming subset-sum if scaled amount is bounded (<= 15000), otherwise fast greedy fallback
+    if (scaledAmount <= 15000) {
+      const dp = new Array(scaledAmount + 1).fill(false);
+      dp[0] = true;
+      const parent = new Array(scaledAmount + 1).fill(null);
+
+      for (const inst of unchecked) {
+        const val = Math.floor(inst.amount / step);
+        for (let w = scaledAmount; w >= val; w--) {
+          if (dp[w - val] && !dp[w]) {
+            dp[w] = true;
+            parent[w] = inst;
+          }
+        }
       }
-      
-      if (bestSum < amount) {
-        scenario = "under";
+
+      let bestSum = scaledAmount;
+      while (bestSum > 0 && !dp[bestSum]) {
+        bestSum--;
+      }
+
+      if (bestSum > 0) {
+        let curr = bestSum;
+        while (curr > 0) {
+          const inst = parent[curr];
+          if (!inst) break;
+          toCheck.push(inst);
+          curr -= Math.floor(inst.amount / step);
+        }
+        if (bestSum < scaledAmount) {
+          scenario = "under";
+        }
       }
     } else {
-      // Find the smallest single installment that exceeds 'amount'
+      // Fast greedy subset approximation for huge sums
+      const sorted = [...unchecked].sort((a, b) => b.amount - a.amount);
+      let curSum = 0;
+      for (const inst of sorted) {
+        if (curSum + inst.amount <= amount) {
+          toCheck.push(inst);
+          curSum += inst.amount;
+        }
+      }
+      if (curSum > 0 && curSum < amount) {
+        scenario = "under";
+      }
+    }
+
+    // If no subset could be selected, find the smallest single installment that exceeds 'amount'
+    if (toCheck.length === 0) {
       const sortedUnchecked = [...unchecked].sort((a, b) => a.amount - b.amount);
       const smallestExceeding = sortedUnchecked.find((i) => i.amount >= amount);
       if (smallestExceeding) {
@@ -228,11 +306,6 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
       </SafeAreaView>
     );
   }
-
-  const [exportFilterActive, setExportFilterActive] = useState(false);
-  const [exportStartDate, setExportStartDate] = useState("");
-  const [exportEndDate, setExportEndDate] = useState("");
-  const [exportIncludeUnchecked, setExportIncludeUnchecked] = useState(true);
 
   const parseDate = (str: string) => {
     const parts = str.split("/");
@@ -635,24 +708,57 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
     }
   };
 
+  const isXOF = (profile?.currency_code || "XOF").toUpperCase() === "XOF";
+  const quickDepositChips = isXOF ? [5000, 10000, 25000] : [10, 20, 50];
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
-      {/* Custom Header */}
+      {/* Top Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.headerBtn} onPress={() => navigation.goBack()}>
-          <ArrowLeft size={24} color={themeColors.foreground} />
+        <TouchableOpacity
+          style={[styles.headerBtn, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}
+          onPress={() => navigation.goBack()}
+        >
+          <ArrowLeft size={20} color={themeColors.foreground} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: themeColors.foreground }]}>Détails du Défi</Text>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <TouchableOpacity style={styles.headerBtn} onPress={handleArchiveToggle}>
-            {challenge.status === "active" ? (
-              <Archive size={22} color={themeColors.primary} />
+
+        <View style={styles.headerCenter}>
+          <Text style={[styles.headerTitle, { color: themeColors.foreground }]} numberOfLines={1}>
+            {challenge.name}
+          </Text>
+          <View style={styles.statusBadgeRow}>
+            {challenge.status === "completed" ? (
+              <View style={[styles.statusBadge, { backgroundColor: `${themeColors.secondary}20`, borderColor: themeColors.secondary }]}>
+                <Text style={[styles.statusBadgeText, { color: themeColors.secondary }]}>🏆 Défi accompli</Text>
+              </View>
+            ) : challenge.status === "archived" ? (
+              <View style={[styles.statusBadge, { backgroundColor: `${themeColors.mutedForeground}20`, borderColor: themeColors.mutedForeground }]}>
+                <Text style={[styles.statusBadgeText, { color: themeColors.mutedForeground }]}>📦 Archivé</Text>
+              </View>
             ) : (
-              <RotateCcw size={22} color={themeColors.primary} />
+              <View style={[styles.statusBadge, { backgroundColor: `${themeColors.primary}18`, borderColor: themeColors.primary }]}>
+                <Text style={[styles.statusBadgeText, { color: themeColors.primary }]}>⚡ Défi en cours</Text>
+              </View>
+            )}
+          </View>
+        </View>
+
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <TouchableOpacity
+            style={[styles.headerBtn, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}
+            onPress={handleArchiveToggle}
+          >
+            {challenge.status === "active" ? (
+              <Archive size={18} color={themeColors.primary} />
+            ) : (
+              <RotateCcw size={18} color={themeColors.primary} />
             )}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.headerBtn} onPress={handleDelete}>
-            <Trash2 size={22} color={themeColors.destructive} />
+          <TouchableOpacity
+            style={[styles.headerBtn, { backgroundColor: `${themeColors.destructive}12`, borderColor: `${themeColors.destructive}30` }]}
+            onPress={handleDelete}
+          >
+            <Trash2 size={18} color={themeColors.destructive} />
           </TouchableOpacity>
         </View>
       </View>
@@ -661,7 +767,7 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
         data={filteredInsts}
         keyExtractor={(item) => item.id}
         numColumns={NUM_COLUMNS}
-        key={NUM_COLUMNS.toString()} // Force rerender of grid if column count changes
+        key={NUM_COLUMNS.toString()}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.listContent}
         columnWrapperStyle={styles.columnWrapper}
@@ -674,77 +780,337 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
             >
+              {/* Top Row: Glowing Emoji + Titles + Percentage badge */}
               <View style={styles.heroTop}>
                 <View style={styles.emojiBg}>
-                  <Text style={styles.emoji}>{challenge.emoji}</Text>
+                  <Text style={styles.emoji}>{challenge.emoji || "🎯"}</Text>
                 </View>
                 <View style={styles.heroInfo}>
                   <Text style={styles.heroName} numberOfLines={1}>{challenge.name}</Text>
-                  {cat && <Text style={styles.heroCategory}>{cat.emoji} {cat.label}</Text>}
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
+                    {cat && (
+                      <View style={styles.catPill}>
+                        <Text style={styles.catPillText}>{cat.emoji} {cat.label}</Text>
+                      </View>
+                    )}
+                    <View style={styles.modePill}>
+                      <Text style={styles.modePillText}>
+                        {challenge.mode === "free" ? "Libre" : challenge.mode === "random" ? "Aléatoire" : "Régulier"}
+                      </Text>
+                    </View>
+                  </View>
                 </View>
-                <Text style={styles.heroPct}>{pct}%</Text>
+                <View style={styles.heroPctBadge}>
+                  <Text style={styles.heroPctText}>{pct}%</Text>
+                </View>
               </View>
 
+              {/* Progress Track */}
               <View style={styles.progressBg}>
-                <View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: themeColors.secondary }]} />
+                <View
+                  style={[
+                    styles.progressFill,
+                    { width: `${pct}%`, backgroundColor: themeColors.secondary },
+                  ]}
+                />
               </View>
 
-              <View style={styles.heroStats}>
-                <View>
-                  <Text style={styles.statLabel}>ÉPARGNÉ</Text>
-                  <Text style={styles.statValue}>{fmt(saved)}</Text>
+              {/* 3-Column Glass Metric Cards */}
+              <View style={styles.metricsRow}>
+                <View style={styles.metricCard}>
+                  <Text style={styles.metricLabel}>ÉPARGNÉ</Text>
+                  <Text style={styles.metricValue} numberOfLines={1} adjustsFontSizeToFit>
+                    {formatMoney(saved)}
+                  </Text>
                 </View>
-                <View style={{ alignItems: "flex-end" }}>
-                  <Text style={styles.statLabel}>OBJECTIF</Text>
-                  <Text style={styles.statValue}>{fmt(challenge.target_amount)}</Text>
+
+                <View style={styles.metricCard}>
+                  <Text style={styles.metricLabel}>RESTANT</Text>
+                  <Text style={[styles.metricValue, { color: "#FDE68A" }]} numberOfLines={1} adjustsFontSizeToFit>
+                    {formatMoney(Math.max(0, challenge.target_amount - saved))}
+                  </Text>
+                </View>
+
+                <View style={styles.metricCard}>
+                  <Text style={styles.metricLabel}>OBJECTIF</Text>
+                  <Text style={styles.metricValue} numberOfLines={1} adjustsFontSizeToFit>
+                    {formatMoney(challenge.target_amount)}
+                  </Text>
                 </View>
               </View>
 
-              {/* Forecast text */}
-              <View style={{ borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.15)", marginTop: 15, paddingTop: 10 }}>
-                <Text style={{ fontSize: 11, color: "rgba(255,255,255,0.9)", fontWeight: "600", textAlign: "center" }}>
-                  ⏱️ {forecastText}
+              {/* Forecast Ribbon */}
+              <View style={styles.forecastRibbon}>
+                <Clock size={12} color="rgba(255,255,255,0.9)" />
+                <Text style={styles.forecastText} numberOfLines={1}>
+                  {forecastText}
                 </Text>
               </View>
             </LinearGradient>
 
-            {/* Auto-deposit Card */}
-            {challenge.status === "active" && (
-              <View style={{ backgroundColor: themeColors.card, borderColor: themeColors.border, padding: 15, marginTop: 10, borderRadius: 16, borderWidth: 1 }}>
-                <Text style={{ fontSize: 13, fontWeight: "bold", color: themeColors.foreground, marginBottom: 2 }}>
-                  ⚡ Auto-Dépôt Intelligent
+            {/* Quick Actions Toolbar */}
+            <View style={styles.quickActionsRow}>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                style={[styles.quickActionBtn, { backgroundColor: `${themeColors.primary}15`, borderColor: `${themeColors.primary}40` }]}
+                onPress={handleShareProgress}
+              >
+                <Share2 size={16} color={themeColors.primary} />
+                <Text style={[styles.quickActionText, { color: themeColors.primary }]}>Partager</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                style={[
+                  styles.quickActionBtn,
+                  {
+                    backgroundColor: exportPanelVisible ? `${themeColors.primary}20` : themeColors.card,
+                    borderColor: exportPanelVisible ? themeColors.primary : themeColors.border,
+                  },
+                ]}
+                onPress={() => setExportPanelVisible(!exportPanelVisible)}
+              >
+                <Download size={16} color={themeColors.primary} />
+                <Text style={[styles.quickActionText, { color: themeColors.foreground }]}>Rapports</Text>
+                {exportPanelVisible ? (
+                  <ChevronUp size={14} color={themeColors.mutedForeground} />
+                ) : (
+                  <ChevronDown size={14} color={themeColors.mutedForeground} />
+                )}
+              </TouchableOpacity>
+
+              {saved > 0 && challenge.status === "active" && (
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  style={[styles.quickActionBtn, { backgroundColor: `${themeColors.destructive}12`, borderColor: `${themeColors.destructive}35` }]}
+                  onPress={() => setWithdrawModalVisible(true)}
+                >
+                  <ShieldAlert size={16} color={themeColors.destructive} />
+                  <Text style={[styles.quickActionText, { color: themeColors.destructive }]}>Coup dur</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Collapsible Export Panel */}
+            {exportPanelVisible && (
+              <View style={[styles.exportCard, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <Sparkles size={16} color={themeColors.primary} />
+                  <Text style={{ fontSize: 13, fontWeight: "bold", color: themeColors.foreground }}>
+                    Génération de rapports & exports
+                  </Text>
+                </View>
+
+                {/* Export format buttons */}
+                <View style={styles.exportFormatsRow}>
+                  <TouchableOpacity
+                    style={[styles.exportFormatBtn, { borderColor: "#EF444440", backgroundColor: "#EF444410" }]}
+                    onPress={handleExportPDF}
+                  >
+                    <FileDown size={15} color="#EF4444" />
+                    <Text style={[styles.exportFormatText, { color: "#EF4444" }]}>PDF Pro</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.exportFormatBtn, { borderColor: "#2563EB40", backgroundColor: "#2563EB10" }]}
+                    onPress={handleExportWord}
+                  >
+                    <FileText size={15} color="#2563EB" />
+                    <Text style={[styles.exportFormatText, { color: "#2563EB" }]}>Word (.docx)</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.exportFormatBtn, { borderColor: "#10B98140", backgroundColor: "#10B98110" }]}
+                    onPress={handleExportExcel}
+                  >
+                    <FileSpreadsheet size={15} color="#10B981" />
+                    <Text style={[styles.exportFormatText, { color: "#10B981" }]}>Excel (.csv)</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Switch 1: Include Unchecked */}
+                <View style={styles.switchRow}>
+                  <View style={{ flex: 1, marginRight: 10 }}>
+                    <Text style={{ fontSize: 12, fontWeight: "600", color: themeColors.foreground }}>
+                      📋 Inclure les tranches non cochées
+                    </Text>
+                    <Text style={{ fontSize: 10, color: themeColors.mutedForeground }}>
+                      Génère la grille complète du défi
+                    </Text>
+                  </View>
+                  <Switch
+                    value={exportIncludeUnchecked}
+                    onValueChange={setExportIncludeUnchecked}
+                    trackColor={{ false: themeColors.border, true: themeColors.primary }}
+                  />
+                </View>
+
+                {/* Switch 2: Date Filter */}
+                <View style={[styles.switchRow, { borderTopWidth: 1, borderTopColor: themeColors.border, paddingTop: 8 }]}>
+                  <View style={{ flex: 1, marginRight: 10 }}>
+                    <Text style={{ fontSize: 12, fontWeight: "600", color: themeColors.foreground }}>
+                      📅 Filtrer par période de validation
+                    </Text>
+                    <Text style={{ fontSize: 10, color: themeColors.mutedForeground }}>
+                      Exporter uniquement les dépôts d'un intervalle
+                    </Text>
+                  </View>
+                  <Switch
+                    value={exportFilterActive}
+                    onValueChange={setExportFilterActive}
+                    trackColor={{ false: themeColors.border, true: themeColors.primary }}
+                  />
+                </View>
+
+                {exportFilterActive && (
+                  <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 10, fontWeight: "bold", color: themeColors.mutedForeground, marginBottom: 4 }}>
+                        Début (JJ/MM/AAAA)
+                      </Text>
+                      <TextInput
+                        style={[styles.dateInput, { backgroundColor: themeColors.background, borderColor: themeColors.border, color: themeColors.foreground }]}
+                        keyboardType="numeric"
+                        value={exportStartDate}
+                        onChangeText={(text) => {
+                          let cleaned = text.replace(/[^0-9]/g, "");
+                          if (cleaned.length > 2) cleaned = cleaned.slice(0, 2) + "/" + cleaned.slice(2);
+                          if (cleaned.length > 5) cleaned = cleaned.slice(0, 5) + "/" + cleaned.slice(5);
+                          if (cleaned.length > 10) cleaned = cleaned.slice(0, 10);
+                          setExportStartDate(cleaned);
+                        }}
+                        placeholder="01/01/2026"
+                        placeholderTextColor={themeColors.mutedForeground}
+                        maxLength={10}
+                      />
+                    </View>
+
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 10, fontWeight: "bold", color: themeColors.mutedForeground, marginBottom: 4 }}>
+                        Fin (JJ/MM/AAAA)
+                      </Text>
+                      <TextInput
+                        style={[styles.dateInput, { backgroundColor: themeColors.background, borderColor: themeColors.border, color: themeColors.foreground }]}
+                        keyboardType="numeric"
+                        value={exportEndDate}
+                        onChangeText={(text) => {
+                          let cleaned = text.replace(/[^0-9]/g, "");
+                          if (cleaned.length > 2) cleaned = cleaned.slice(0, 2) + "/" + cleaned.slice(2);
+                          if (cleaned.length > 5) cleaned = cleaned.slice(0, 5) + "/" + cleaned.slice(5);
+                          if (cleaned.length > 10) cleaned = cleaned.slice(0, 10);
+                          setExportEndDate(cleaned);
+                        }}
+                        placeholder="31/12/2026"
+                        placeholderTextColor={themeColors.mutedForeground}
+                        maxLength={10}
+                      />
+                    </View>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Free Mode Deposit Card */}
+            {challenge.mode === "free" && challenge.status === "active" && (
+              <View style={[styles.depositCard, { backgroundColor: themeColors.card, borderColor: themeColors.primary }]}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <Plus size={18} color={themeColors.primary} />
+                  <Text style={{ fontSize: 14, fontWeight: "bold", color: themeColors.foreground }}>
+                    Nouveau Versement Libre
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 11, color: themeColors.mutedForeground, marginBottom: 10 }}>
+                  Saisis la somme exacte à ajouter à ton épargne aujourd'hui.
                 </Text>
-                <Text style={{ fontSize: 11, color: themeColors.mutedForeground, marginBottom: 12 }}>
-                  Saisis une somme globale et l'application cochera automatiquement les meilleures cases correspondantes.
-                </Text>
+
+                {/* Quick Chips */}
+                <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
+                  {quickDepositChips.map((chip) => (
+                    <TouchableOpacity
+                      key={chip}
+                      style={[styles.quickChip, { backgroundColor: themeColors.muted, borderColor: themeColors.border }]}
+                      onPress={() => setCustomDepositAmount(chip.toString())}
+                    >
+                      <Text style={{ fontSize: 11, fontWeight: "700", color: themeColors.primary }}>
+                        +{chip.toLocaleString("fr-FR")}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
                 <View style={{ flexDirection: "row", gap: 10 }}>
                   <TextInput
-                    style={{
-                      flex: 1,
-                      color: themeColors.foreground,
-                      backgroundColor: themeColors.background,
-                      borderColor: themeColors.border,
-                      height: 40,
-                      borderRadius: 10,
-                      borderWidth: 1,
-                      paddingHorizontal: 12,
-                      fontSize: 13,
+                    style={[styles.depositInput, { color: themeColors.foreground, backgroundColor: themeColors.background, borderColor: themeColors.border }]}
+                    placeholder={`ex: 10 000 (${profile?.currency_symbol || ""})`}
+                    placeholderTextColor={themeColors.mutedForeground}
+                    keyboardType="numeric"
+                    value={customDepositAmount}
+                    onChangeText={setCustomDepositAmount}
+                  />
+                  <TouchableOpacity
+                    style={[styles.depositBtn, { backgroundColor: themeColors.primary }]}
+                    onPress={async () => {
+                      const amount = parseFloat(customDepositAmount.replace(/\s+/g, "").replace(",", "."));
+                      if (isNaN(amount) || amount <= 0) {
+                        Alert.alert("Montant invalide", "Veuillez entrer un montant supérieur à 0.");
+                        return;
+                      }
+                      try {
+                        await addCustomInstallment(challenge.id, amount);
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                        setCustomDepositAmount("");
+                        notificationService.sendCongratsNotification(challenge.name, fmt(amount));
+                        Alert.alert("Bravo ! 🎉", `Versement de ${fmt(amount)} enregistré avec succès.`);
+                      } catch (e: any) {
+                        Alert.alert("Erreur", e.message || "Impossible d'enregistrer le versement.");
+                      }
                     }}
-                    placeholder="Montant à déposer..."
+                  >
+                    <Text style={{ color: "white", fontSize: 13, fontWeight: "bold" }}>Verser</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {/* Auto-deposit Card (for random and regular modes) */}
+            {challenge.mode !== "free" && challenge.status === "active" && (
+              <View style={[styles.depositCard, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <Zap size={18} color={themeColors.primary} />
+                  <Text style={{ fontSize: 14, fontWeight: "bold", color: themeColors.foreground }}>
+                    Auto-Dépôt Intelligent
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 11, color: themeColors.mutedForeground, marginBottom: 10 }}>
+                  Saisis une somme et l'algorithme trouvera et cochera automatiquement la combinaison optimale de cases.
+                </Text>
+
+                {/* Quick Chips */}
+                <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
+                  {quickDepositChips.map((chip) => (
+                    <TouchableOpacity
+                      key={chip}
+                      style={[styles.quickChip, { backgroundColor: themeColors.muted, borderColor: themeColors.border }]}
+                      onPress={() => setAutoDepositAmount(chip.toString())}
+                    >
+                      <Text style={{ fontSize: 11, fontWeight: "700", color: themeColors.primary }}>
+                        +{chip.toLocaleString("fr-FR")}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  <TextInput
+                    style={[styles.depositInput, { color: themeColors.foreground, backgroundColor: themeColors.background, borderColor: themeColors.border }]}
+                    placeholder="Montant total à déposer..."
                     placeholderTextColor={themeColors.mutedForeground}
                     keyboardType="numeric"
                     value={autoDepositAmount}
                     onChangeText={setAutoDepositAmount}
                   />
                   <TouchableOpacity
-                    style={{
-                      backgroundColor: themeColors.primary,
-                      justifyContent: "center",
-                      alignItems: "center",
-                      paddingHorizontal: 16,
-                      borderRadius: 10,
-                      height: 40,
-                    }}
+                    style={[styles.depositBtn, { backgroundColor: themeColors.primary }]}
                     onPress={handleAutoDeposit}
                   >
                     <Text style={{ color: "white", fontSize: 13, fontWeight: "bold" }}>Valider</Text>
@@ -755,217 +1121,125 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
 
             {/* Congratulations Card on Completion */}
             {challenge.status === "completed" && (
-              <View style={{ backgroundColor: `${themeColors.secondary}15`, borderColor: themeColors.secondary, padding: 20, marginTop: 10, borderRadius: 16, borderWidth: 1, alignItems: "center" }}>
-                <Text style={{ fontSize: 24, marginBottom: 5 }}>🏆</Text>
-                <Text style={{ fontSize: 15, fontWeight: "bold", color: themeColors.secondary, textAlign: "center", marginBottom: 4 }}>
+              <View style={[styles.completionCard, { backgroundColor: `${themeColors.secondary}15`, borderColor: themeColors.secondary }]}>
+                <Text style={{ fontSize: 32, marginBottom: 6 }}>🏆</Text>
+                <Text style={{ fontSize: 16, fontWeight: "800", color: themeColors.secondary, textAlign: "center", marginBottom: 4 }}>
                   Félicitations, défi accompli ! 🎉
                 </Text>
-                <Text style={{ fontSize: 12, color: themeColors.mutedForeground, textAlign: "center", marginBottom: 15, lineHeight: 18 }}>
-                  Tu as épargné la totalité de ton objectif de {fmt(challenge.target_amount)}. C'est un exploit incroyable, bravo pour ta discipline !
+                <Text style={{ fontSize: 12, color: themeColors.mutedForeground, textAlign: "center", marginBottom: 14, lineHeight: 18 }}>
+                  Tu as épargné la totalité de ton objectif de {fmt(challenge.target_amount)}. Bravo pour ta discipline et ta constance !
                 </Text>
                 <TouchableOpacity
-                  style={{
-                    backgroundColor: themeColors.secondary,
-                    justifyContent: "center",
-                    alignItems: "center",
-                    paddingHorizontal: 20,
-                    height: 40,
-                    borderRadius: 20,
-                    width: "100%",
-                  }}
-                  onPress={() => {
-                    navigation.navigate("Dashboard");
-                  }}
+                  style={[styles.completionBtn, { backgroundColor: themeColors.secondary }]}
+                  onPress={() => navigation.navigate("Dashboard")}
                 >
-                  <Text style={{ color: "white", fontSize: 13, fontWeight: "bold" }}>Terminer et retourner à l'accueil</Text>
+                  <Text style={{ color: "white", fontSize: 13, fontWeight: "bold" }}>
+                    Terminer et retourner à l'accueil
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}
 
-            {/* Filter Exports Card */}
-            <View style={{ backgroundColor: themeColors.card, borderColor: themeColors.border, padding: 15, marginTop: 10, marginBottom: 15, borderRadius: 16, borderWidth: 1 }}>
-              {/* Option 1: Include Unchecked */}
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <View style={{ flex: 1, marginRight: 10 }}>
-                  <Text style={{ fontSize: 13, fontWeight: "bold", color: themeColors.foreground }}>📋 Inclure les versements non cochés</Text>
-                  <Text style={{ fontSize: 11, color: themeColors.mutedForeground }}>Exporter tous les versements (y compris non cochés).</Text>
-                </View>
-                <Switch
-                  value={exportIncludeUnchecked}
-                  onValueChange={setExportIncludeUnchecked}
-                  trackColor={{ false: themeColors.border, true: themeColors.primary }}
-                />
-              </View>
-
-              <View style={{ height: 1, backgroundColor: themeColors.border, marginVertical: 8 }} />
-
-              {/* Option 2: Date Filter */}
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                <View style={{ flex: 1, marginRight: 10 }}>
-                  <Text style={{ fontSize: 13, fontWeight: "bold", color: themeColors.foreground }}>📅 Filtrer par date de versement</Text>
-                  <Text style={{ fontSize: 11, color: themeColors.mutedForeground }}>Restreindre l'export des versements cochés sur une période.</Text>
-                </View>
-                <Switch
-                  value={exportFilterActive}
-                  onValueChange={setExportFilterActive}
-                  trackColor={{ false: themeColors.border, true: themeColors.primary }}
-                />
-              </View>
-
-              {exportFilterActive && (
-                <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 10, fontWeight: "bold", color: themeColors.mutedForeground, marginBottom: 4 }}>Début (JJ/MM/AAAA)</Text>
-                    <TextInput
-                      style={{
-                        height: 40,
-                        borderWidth: 1,
-                        borderRadius: 10,
-                        paddingHorizontal: 10,
-                        fontSize: 12,
-                        backgroundColor: themeColors.background,
-                        borderColor: themeColors.border,
-                        color: themeColors.foreground,
-                        textAlign: "center",
-                      }}
-                      keyboardType="numeric"
-                      value={exportStartDate}
-                      onChangeText={(text) => {
-                        let cleaned = text.replace(/[^0-9]/g, "");
-                        if (cleaned.length > 2) cleaned = cleaned.slice(0, 2) + "/" + cleaned.slice(2);
-                        if (cleaned.length > 5) cleaned = cleaned.slice(0, 5) + "/" + cleaned.slice(5);
-                        if (cleaned.length > 10) cleaned = cleaned.slice(0, 10);
-                        setExportStartDate(cleaned);
-                      }}
-                      placeholder="01/01/2026"
-                      placeholderTextColor={themeColors.mutedForeground}
-                      maxLength={10}
-                    />
-                  </View>
-
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 10, fontWeight: "bold", color: themeColors.mutedForeground, marginBottom: 4 }}>Fin (JJ/MM/AAAA)</Text>
-                    <TextInput
-                      style={{
-                        height: 40,
-                        borderWidth: 1,
-                        borderRadius: 10,
-                        paddingHorizontal: 10,
-                        fontSize: 12,
-                        backgroundColor: themeColors.background,
-                        borderColor: themeColors.border,
-                        color: themeColors.foreground,
-                        textAlign: "center",
-                      }}
-                      keyboardType="numeric"
-                      value={exportEndDate}
-                      onChangeText={(text) => {
-                        let cleaned = text.replace(/[^0-9]/g, "");
-                        if (cleaned.length > 2) cleaned = cleaned.slice(0, 2) + "/" + cleaned.slice(2);
-                        if (cleaned.length > 5) cleaned = cleaned.slice(0, 5) + "/" + cleaned.slice(5);
-                        if (cleaned.length > 10) cleaned = cleaned.slice(0, 10);
-                        setExportEndDate(cleaned);
-                      }}
-                      placeholder="31/12/2026"
-                      placeholderTextColor={themeColors.mutedForeground}
-                      maxLength={10}
-                    />
-                  </View>
-                </View>
-              )}
-            </View>
-
-            {/* Export options */}
-            <View style={styles.exportRow}>
-              <TouchableOpacity style={[styles.exportBtn, { borderColor: themeColors.border, backgroundColor: themeColors.card }]} onPress={handleExportPDF}>
-                <FileDown size={15} color={themeColors.primary} />
-                <Text style={[styles.exportBtnText, { color: themeColors.foreground }]}>PDF</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[styles.exportBtn, { borderColor: themeColors.border, backgroundColor: themeColors.card }]} onPress={handleExportWord}>
-                <FileText size={15} color={themeColors.primary} />
-                <Text style={[styles.exportBtnText, { color: themeColors.foreground }]}>Word</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[styles.exportBtn, { borderColor: themeColors.border, backgroundColor: themeColors.card }]} onPress={handleExportExcel}>
-                <FileSpreadsheet size={15} color={themeColors.primary} />
-                <Text style={[styles.exportBtnText, { color: themeColors.foreground }]}>Excel</Text>
-              </TouchableOpacity>
-            </View>
-
-            <TouchableOpacity 
-              style={{
-                backgroundColor: `${themeColors.primary}15`, 
-                borderColor: themeColors.primary,
-                borderWidth: 1,
-                borderRadius: 12,
-                paddingVertical: 10,
-                flexDirection: "row",
-                justifyContent: "center",
-                alignItems: "center",
-                gap: 8,
-                marginTop: 10,
-              }} 
-              onPress={handleShareProgress}
-            >
-              <Share2 size={16} color={themeColors.primary} />
-              <Text style={{ color: themeColors.primary, fontWeight: "bold", fontSize: 13 }}>
-                Partager ma progression
-              </Text>
-            </TouchableOpacity>
-
-            {/* Filter Tabs */}
+            {/* Filter Tabs Segmented Control */}
             <View style={[styles.tabsContainer, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
               <TouchableOpacity
-                style={[styles.tab, filter === "all" && { backgroundColor: themeColors.muted }]}
+                style={[styles.tab, filter === "all" && [styles.activeTab, { backgroundColor: themeColors.primary }]]}
                 onPress={() => setFilter("all")}
               >
-                <Text style={[styles.tabText, { color: themeColors.foreground }]}>Tout ({challengeInsts.length})</Text>
+                <Text style={[styles.tabText, { color: filter === "all" ? "white" : themeColors.foreground }]}>
+                  Tout ({challengeInsts.length})
+                </Text>
               </TouchableOpacity>
+
               <TouchableOpacity
-                style={[styles.tab, filter === "todo" && { backgroundColor: themeColors.muted }]}
+                style={[styles.tab, filter === "todo" && [styles.activeTab, { backgroundColor: themeColors.primary }]]}
                 onPress={() => setFilter("todo")}
               >
-                <Text style={[styles.tabText, { color: themeColors.foreground }]}>
+                <Text style={[styles.tabText, { color: filter === "todo" ? "white" : themeColors.foreground }]}>
                   À faire ({challengeInsts.filter((i) => !i.is_checked).length})
                 </Text>
               </TouchableOpacity>
+
               <TouchableOpacity
-                style={[styles.tab, filter === "done" && { backgroundColor: themeColors.muted }]}
+                style={[styles.tab, filter === "done" && [styles.activeTab, { backgroundColor: themeColors.primary }]]}
                 onPress={() => setFilter("done")}
               >
-                <Text style={[styles.tabText, { color: themeColors.foreground }]}>
-                  Coché ({challengeInsts.filter((i) => i.is_checked).length})
+                <Text style={[styles.tabText, { color: filter === "done" ? "white" : themeColors.foreground }]}>
+                  Validés ({challengeInsts.filter((i) => i.is_checked).length})
                 </Text>
               </TouchableOpacity>
             </View>
           </>
         }
-        renderItem={({ item }) => {
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Text style={{ fontSize: 32, marginBottom: 8 }}>{challenge.mode === "free" ? "🌱" : "🔍"}</Text>
+            <Text style={[styles.emptyTitle, { color: themeColors.foreground }]}>
+              {challenge.mode === "free" ? "Aucun versement libre pour l'instant" : "Aucun versement dans ce filtre"}
+            </Text>
+            <Text style={[styles.emptySubtitle, { color: themeColors.mutedForeground }]}>
+              {challenge.mode === "free"
+                ? "Utilise le formulaire ci-dessus pour enregistrer ton premier dépôt !"
+                : "Sélectionne l'onglet 'Tout' pour afficher les autres tranches."}
+            </Text>
+          </View>
+        }
+        renderItem={({ item, index }) => {
           return (
             <TouchableOpacity
+              activeOpacity={0.7}
               style={[
                 styles.gridItem,
                 {
-                  backgroundColor: item.is_checked ? `${themeColors.secondary}20` : themeColors.card,
+                  backgroundColor: item.is_checked ? `${themeColors.secondary}18` : themeColors.card,
                   borderColor: item.is_checked ? themeColors.secondary : themeColors.border,
+                  borderWidth: item.is_checked ? 1.5 : 1,
                 },
               ]}
               onPress={() => handleToggle(item.id)}
             >
+              {/* Top row: Position badge */}
+              <View style={styles.gridItemTop}>
+                <Text
+                  style={[
+                    styles.itemPosition,
+                    { color: item.is_checked ? themeColors.secondary : themeColors.mutedForeground },
+                  ]}
+                >
+                  #{item.position || index + 1}
+                </Text>
+                {item.is_checked && (
+                  <View style={[styles.checkedDot, { backgroundColor: themeColors.secondary }]} />
+                )}
+              </View>
+
+              {/* Middle: Amount */}
               <Text
                 style={[
                   styles.itemAmount,
-                  { color: item.is_checked ? themeColors.secondary : themeColors.foreground },
+                  {
+                    color: item.is_checked ? themeColors.secondary : themeColors.foreground,
+                    fontWeight: item.is_checked ? "800" : "700",
+                  },
                 ]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
               >
-                {fmt(item.amount).replace(/\s€|€/g, "")}
+                {isHidden ? "••" : fmt(item.amount)}
               </Text>
-              <View style={styles.checkIcon}>
+
+              {/* Bottom: Check pill */}
+              <View style={styles.gridItemBottom}>
                 {item.is_checked ? (
-                  <CheckCircle2 size={16} color={themeColors.secondary} />
+                  <View style={[styles.itemStatusPill, { backgroundColor: `${themeColors.secondary}25` }]}>
+                    <CheckCircle2 size={12} color={themeColors.secondary} />
+                    <Text style={[styles.itemStatusText, { color: themeColors.secondary }]}>Payé</Text>
+                  </View>
                 ) : (
-                  <Circle size={16} color={themeColors.mutedForeground} />
+                  <View style={[styles.itemStatusPill, { backgroundColor: themeColors.muted }]}>
+                    <Circle size={10} color={themeColors.mutedForeground} />
+                    <Text style={[styles.itemStatusText, { color: themeColors.mutedForeground }]}>À faire</Text>
+                  </View>
                 )}
               </View>
             </TouchableOpacity>
@@ -973,6 +1247,132 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
         }}
       />
       <Confetti active={confettiActive} onAnimationEnd={() => setConfettiActive(false)} />
+
+      {/* Emergency Withdrawal Modal */}
+      <Modal
+        visible={withdrawModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setWithdrawModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <ShieldAlert size={22} color={themeColors.destructive} />
+                <Text style={[styles.modalTitle, { color: themeColors.foreground }]}>Retrait d'urgence</Text>
+              </View>
+              <TouchableOpacity onPress={() => setWithdrawModalVisible(false)}>
+                <X size={20} color={themeColors.mutedForeground} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={{ fontSize: 12, color: themeColors.mutedForeground, lineHeight: 18, marginBottom: 14 }}>
+              Un imprévu arrive. Vous pouvez retirer une somme de ce défi. L'application ajustera intelligemment vos cases cochées tout en préservant votre historique.
+            </Text>
+
+            <View style={[styles.availableCard, { backgroundColor: themeColors.muted }]}>
+              <Text style={{ fontSize: 11, color: themeColors.mutedForeground }}>Disponible actuellement sur ce défi :</Text>
+              <Text style={{ fontSize: 18, fontWeight: "bold", color: themeColors.primary, marginTop: 2 }}>{fmt(saved)}</Text>
+            </View>
+
+            {/* Quick Percentage Chips */}
+            <Text style={{ fontSize: 11, fontWeight: "600", color: themeColors.mutedForeground, marginBottom: 6 }}>
+              Raccourcis de retrait :
+            </Text>
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+              {[
+                { label: "25%", val: Math.round(saved * 0.25) },
+                { label: "50%", val: Math.round(saved * 0.5) },
+                { label: "Tout (100%)", val: saved },
+              ].map((p) => (
+                <TouchableOpacity
+                  key={p.label}
+                  style={[styles.percentChip, { backgroundColor: themeColors.background, borderColor: themeColors.border }]}
+                  onPress={() => setWithdrawAmount(p.val.toString())}
+                >
+                  <Text style={{ fontSize: 11, fontWeight: "bold", color: themeColors.foreground }}>
+                    {p.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={{ fontSize: 12, fontWeight: "600", color: themeColors.foreground, marginBottom: 6 }}>
+              Montant exact à retirer :
+            </Text>
+            <TextInput
+              style={[styles.modalInput, { backgroundColor: themeColors.background, borderColor: themeColors.border, color: themeColors.foreground }]}
+              placeholder={`ex: ${Math.min(saved, 10000)}`}
+              placeholderTextColor={themeColors.mutedForeground}
+              keyboardType="numeric"
+              value={withdrawAmount}
+              onChangeText={setWithdrawAmount}
+            />
+
+            <Text style={{ fontSize: 12, fontWeight: "600", color: themeColors.foreground, marginTop: 12, marginBottom: 6 }}>
+              Motif du coup dur :
+            </Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+              {["Santé 🏥", "Facture ⚡", "Réparation 🚗", "Autre 📝"].map((reason) => (
+                <TouchableOpacity
+                  key={reason}
+                  style={[
+                    styles.reasonChip,
+                    {
+                      borderColor: withdrawReason === reason ? themeColors.primary : themeColors.border,
+                      backgroundColor: withdrawReason === reason ? `${themeColors.primary}20` : themeColors.background,
+                    },
+                  ]}
+                  onPress={() => setWithdrawReason(reason)}
+                >
+                  <Text style={{ fontSize: 11, fontWeight: "600", color: withdrawReason === reason ? themeColors.primary : themeColors.mutedForeground }}>
+                    {reason}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
+              <TouchableOpacity
+                style={[styles.modalCancelBtn, { borderColor: themeColors.border }]}
+                onPress={() => setWithdrawModalVisible(false)}
+              >
+                <Text style={{ color: themeColors.foreground, fontWeight: "600", fontSize: 13 }}>Annuler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalConfirmBtn, { backgroundColor: themeColors.destructive }]}
+                onPress={async () => {
+                  const amt = parseFloat(withdrawAmount.replace(/\s+/g, "").replace(",", "."));
+                  if (isNaN(amt) || amt <= 0) {
+                    Alert.alert("Montant invalide", "Veuillez entrer un montant valide supérieur à 0.");
+                    return;
+                  }
+                  if (amt > saved) {
+                    Alert.alert("Montant trop élevé", `Vous ne pouvez pas retirer plus que le montant déjà épargné (${fmt(saved)}).`);
+                    return;
+                  }
+
+                  try {
+                    await withdrawFromChallenge(challenge.id, amt, withdrawReason);
+                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                    setWithdrawModalVisible(false);
+                    setWithdrawAmount("");
+                    Alert.alert(
+                      "Retrait effectué ⚠️",
+                      `Un montant de ${fmt(amt)} a été retiré pour le motif "${withdrawReason}". Courage, vous pourrez rattraper votre défi plus tard !`
+                    );
+                  } catch (e: any) {
+                    Alert.alert("Erreur", e.message || "Impossible d'effectuer le retrait.");
+                  }
+                }}
+              >
+                <Text style={{ color: "white", fontWeight: "bold", fontSize: 13 }}>Confirmer le retrait</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -980,7 +1380,7 @@ export default function ChallengeDetailScreen({ route, navigation }: any) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 24) + 10 : 0,
+    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 24) + 6 : 0,
   },
   errorContainer: {
     flex: 1,
@@ -1000,147 +1400,416 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 15,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   headerBtn: {
     width: 40,
     height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
     justifyContent: "center",
     alignItems: "center",
   },
+  headerCenter: {
+    flex: 1,
+    alignItems: "center",
+    marginHorizontal: 10,
+  },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "bold",
+    textAlign: "center",
+  },
+  statusBadgeRow: {
+    marginTop: 2,
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  statusBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
   },
   listContent: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingBottom: 40,
   },
   heroCard: {
     borderRadius: 24,
-    padding: 20,
-    marginTop: 10,
-    marginBottom: 20,
+    padding: 18,
+    marginTop: 8,
+    marginBottom: 14,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 4,
   },
   heroTop: {
     flexDirection: "row",
     alignItems: "center",
   },
   emojiBg: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.2)",
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.22)",
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.35)",
     justifyContent: "center",
     alignItems: "center",
   },
   emoji: {
-    fontSize: 24,
+    fontSize: 26,
   },
   heroInfo: {
     flex: 1,
-    marginLeft: 15,
+    marginLeft: 12,
   },
   heroName: {
     fontSize: 18,
-    fontWeight: "bold",
+    fontWeight: "800",
     color: "white",
+    letterSpacing: -0.2,
   },
-  heroCategory: {
-    fontSize: 12,
-    color: "rgba(255,255,255,0.8)",
-    marginTop: 2,
+  catPill: {
+    backgroundColor: "rgba(255,255,255,0.2)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
   },
-  heroPct: {
-    fontSize: 24,
-    fontWeight: "bold",
+  catPillText: {
+    fontSize: 11,
+    color: "white",
+    fontWeight: "600",
+  },
+  modePill: {
+    backgroundColor: "rgba(255,255,255,0.12)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  modePillText: {
+    fontSize: 11,
+    color: "rgba(255,255,255,0.85)",
+    fontWeight: "600",
+  },
+  heroPctBadge: {
+    backgroundColor: "rgba(255,255,255,0.25)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.4)",
+  },
+  heroPctText: {
+    fontSize: 18,
+    fontWeight: "900",
     color: "white",
   },
   progressBg: {
-    height: 8,
-    borderRadius: 4,
+    height: 10,
+    borderRadius: 5,
     backgroundColor: "rgba(255,255,255,0.2)",
-    marginTop: 20,
+    marginTop: 16,
     overflow: "hidden",
   },
   progressFill: {
     height: "100%",
-    borderRadius: 4,
+    borderRadius: 5,
   },
-  heroStats: {
+  metricsRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 20,
+    gap: 8,
+    marginTop: 14,
   },
-  statLabel: {
-    fontSize: 10,
-    color: "rgba(255,255,255,0.6)",
-    fontWeight: "700",
+  metricCard: {
+    flex: 1,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    alignItems: "center",
   },
-  statValue: {
-    fontSize: 16,
-    fontWeight: "bold",
+  metricLabel: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "rgba(255,255,255,0.75)",
+    letterSpacing: 0.5,
+  },
+  metricValue: {
+    fontSize: 14,
+    fontWeight: "800",
     color: "white",
     marginTop: 2,
   },
-  tabsContainer: {
+  forecastRibbon: {
     flexDirection: "row",
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 4,
-    marginBottom: 15,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 8,
     alignItems: "center",
-    borderRadius: 8,
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "rgba(0,0,0,0.15)",
+    borderRadius: 10,
+    marginTop: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
   },
-  tabText: {
-    fontSize: 12,
+  forecastText: {
+    fontSize: 11,
+    color: "rgba(255,255,255,0.95)",
     fontWeight: "600",
   },
-  columnWrapper: {
-    justifyContent: "flex-start",
-    gap: 8,
-    marginBottom: 8,
-  },
-  exportRow: {
+  quickActionsRow: {
     flexDirection: "row",
     gap: 8,
-    marginVertical: 15,
+    marginBottom: 12,
   },
-  exportBtn: {
+  quickActionBtn: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
     height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  quickActionText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  exportCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 12,
+  },
+  exportFormatsRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+  exportFormatBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    height: 36,
     borderRadius: 10,
     borderWidth: 1,
   },
-  exportBtnText: {
-    fontSize: 12,
+  exportFormatText: {
+    fontSize: 11,
     fontWeight: "bold",
   },
-  gridItem: {
-    width: (width - 40 - (NUM_COLUMNS - 1) * 8) / NUM_COLUMNS,
-    height: 72,
-    borderRadius: 12,
+  switchRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginVertical: 4,
+  },
+  dateInput: {
+    height: 38,
     borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    fontSize: 11,
+    textAlign: "center",
+  },
+  depositCard: {
+    borderRadius: 16,
+    borderWidth: 1.5,
+    padding: 14,
+    marginBottom: 12,
+  },
+  quickChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  depositInput: {
+    flex: 1,
+    height: 42,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    fontSize: 13,
+  },
+  depositBtn: {
     justifyContent: "center",
     alignItems: "center",
-    padding: 6,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    height: 42,
+  },
+  completionCard: {
+    borderRadius: 16,
+    borderWidth: 1.5,
+    padding: 18,
+    marginBottom: 14,
+    alignItems: "center",
+  },
+  completionBtn: {
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    height: 40,
+    borderRadius: 20,
+    width: "100%",
+  },
+  tabsContainer: {
+    flexDirection: "row",
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 3,
+    marginBottom: 14,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: "center",
+    borderRadius: 10,
+  },
+  activeTab: {
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  tabText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  columnWrapper: {
+    justifyContent: "flex-start",
+    gap: 8,
+    marginBottom: 8,
+  },
+  gridItem: {
+    width: (width - 32 - (NUM_COLUMNS - 1) * 8) / NUM_COLUMNS,
+    height: 78,
+    borderRadius: 14,
+    padding: 7,
+    justifyContent: "space-between",
+  },
+  gridItemTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  itemPosition: {
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  checkedDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   itemAmount: {
     fontSize: 13,
-    fontWeight: "bold",
+    textAlign: "center",
+    marginVertical: 2,
+  },
+  gridItemBottom: {
+    alignItems: "center",
+  },
+  itemStatusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  itemStatusText: {
+    fontSize: 9,
+    fontWeight: "700",
+  },
+  emptyContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 35,
+    paddingHorizontal: 20,
+  },
+  emptyTitle: {
+    fontSize: 14,
+    fontWeight: "700",
     textAlign: "center",
   },
-  checkIcon: {
-    position: "absolute",
-    bottom: 6,
+  emptySubtitle: {
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: 4,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 380,
+    borderRadius: 24,
+    borderWidth: 1,
+    padding: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+  availableCard: {
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 14,
+  },
+  percentChip: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: "center",
+  },
+  modalInput: {
+    height: 44,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    fontSize: 14,
+  },
+  reasonChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    height: 42,
+    borderWidth: 1,
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalConfirmBtn: {
+    flex: 1.5,
+    height: 42,
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
   },
 });

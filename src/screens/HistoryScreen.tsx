@@ -4,12 +4,12 @@ import {
   Text,
   StyleSheet,
   FlatList,
-  SafeAreaView,
   Platform,
   StatusBar,
   TouchableOpacity,
   Alert,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { ArrowLeft, Clock, CheckCircle, Trophy, Calendar, Archive, RotateCcw, AlertCircle } from "lucide-react-native";
 import { useApp } from "../services/AppContext";
 import { useMoneyFormatter } from "../hooks/useMoneyFormatter";

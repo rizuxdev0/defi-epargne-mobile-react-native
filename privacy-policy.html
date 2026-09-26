@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Politique de Confidentialité — Défi Épargne</title>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem 1rem;
+    }
+    .container {
+      max-width: 760px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      padding: 2.5rem;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    .badge {
+      display: inline-block;
+      background: #eff6ff;
+      color: var(--primary);
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+    }
+    h1 {
+      font-size: 1.85rem;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+    }
+    .date {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 1.75rem;
+      margin-bottom: 0.75rem;
+      color: var(--text);
+    }
+    p, ul {
+      margin-bottom: 1rem;
+      color: #334155;
+    }
+    ul {
+      padding-left: 1.5rem;
+    }
+    li {
+      margin-bottom: 0.4rem;
+    }
+    .highlight-box {
+      background: #f0fdf4;
+      border-left: 4px solid #16a34a;
+      padding: 1rem;
+      border-radius: 8px;
+      margin: 1.5rem 0;
+      color: #14532d;
+    }
+    footer {
+      margin-top: 2.5rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.85rem;
+      color: var(--muted);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <span class="badge">🔒 Respect de votre vie privée</span>
+      <h1>Politique de Confidentialité</h1>
+      <p class="date">Application : <strong>Défi Épargne</strong> • Dernière mise à jour : 26 Septembre 2026</p>
+    </header>
+
+    <div class="highlight-box">
+      <strong>Résumé clair :</strong> Défi Épargne est une application locale d'auto-discipline financière. Vos montants épargnés, vos objectifs et vos historiques restent stockés <strong>exclusivement sur votre téléphone</strong>. Aucune donnée n'est envoyée à des serveurs tiers ni vendue.
+    </div>
+
+    <h2>1. Collecte et Stockage des Données</h2>
+    <p>L'application Défi Épargne fonctionne selon une architecture <em>Offline-First / Stockage Local</em> :</p>
+    <ul>
+      <li><strong>Données financières et d'épargne :</strong> Vos défis, versements, dates et montants sont stockés exclusivement dans la mémoire sandbox interne de votre appareil mobile.</li>
+      <li><strong>Préférences de profil :</strong> Votre prénom, avatar choisi, devise et paramètres d'affichage restent sur votre appareil.</li>
+      <li><strong>Code PIN :</strong> Si vous configurez un code PIN de verrouillage, il est vérifié localement sur l'appareil.</li>
+    </ul>
+
+    <h2>2. Utilisation de l'Intelligence Artificielle (RIZUX IA / Google Gemini)</h2>
+    <p>L'application propose un assistant d'analyse financière :</p>
+    <ul>
+      <li><strong>Mode Local par défaut :</strong> RIZUX IA fonctionne 100% hors-ligne sur votre téléphone sans aucune transmission de données sur Internet.</li>
+      <li><strong>Mode Cloud (Optionnel) :</strong> Si vous choisissez d'activer la connexion Google Cloud en fournissant votre propre clé API Google Gemini (AI Studio), les requêtes textuelles de conseil sont transmises de manière chiffrée (HTTPS) directement aux serveurs de Google (Alphabet Inc.) selon les règles de confidentialité de Google Cloud. Aucune donnée bancaire sensible ou confidentielle n'y est transmise.</li>
+    </ul>
+
+    <h2>3. Permissions demandées</h2>
+    <ul>
+      <li><strong>Notifications locales (VIBRATE, SCHEDULE_EXACT_ALARM, RECEIVE_BOOT_COMPLETED) :</strong> Utilisées uniquement pour programmer et délivrer vos rappels quotidiens d'épargne sur votre appareil.</li>
+      <li><strong>Accès Internet (INTERNET) :</strong> Uniquement requis si vous activez les conseils du coach avec une clé Google Gemini connectée ou pour partager une sauvegarde JSON.</li>
+    </ul>
+
+    <h2>4. Partage avec des tiers</h2>
+    <p>Nous ne vendons, ne louons, n'échangeons et ne transférons aucune information personnelle identifiable à des tiers. L'application ne contient aucune régie publicitaire ni traceur de profilage commercial.</p>
+
+    <h2>5. Sauvegarde et Exportation</h2>
+    <p>Vous disposez d'un contrôle total sur vos données : vous pouvez à tout moment exporter une copie de votre base de données au format JSON ou réinitialiser intégralement vos données depuis les <em>Paramètres</em> de l'application.</p>
+
+    <h2>6. Contact</h2>
+    <p>Pour toute question ou demande concernant la politique de confidentialité de Défi Épargne, vous pouvez contacter le développeur à l'adresse suivante :</p>
+    <p><strong>Email :</strong> contact.defiepargne@gmail.com</p>
+
+    <footer>
+      © 2026 Défi Épargne. Tous droits réservés.
+    </footer>
+  </div>
+</body>
+</html>

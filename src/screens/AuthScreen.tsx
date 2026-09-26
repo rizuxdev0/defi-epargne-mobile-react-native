@@ -4,17 +4,18 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView, Platform,
+  Platform,
   TextInput,
   Alert,
   Dimensions,
   ScrollView,
   StatusBar,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useApp } from "../services/AppContext";
 import { COLORS } from "../lib/theme";
 import { LinearGradient } from "expo-linear-gradient";
-import { Lock, Sparkles, User, KeyRound } from "lucide-react-native";
+import { Lock, Sparkles, User, KeyRound, ShieldAlert } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 
 const { width } = Dimensions.get("window");
@@ -26,17 +27,36 @@ export default function AuthScreen({ navigation }: any) {
   const [setupName, setSetupName] = useState("");
   const [setupPin, setSetupPin] = useState("");
   const [setupPinConfirm, setSetupPinConfirm] = useState("");
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
 
   const themeColors = COLORS[profile?.theme || "light"];
+
+  // Countdown timer for lockout
+  useEffect(() => {
+    if (lockoutSeconds <= 0) return;
+    const interval = setInterval(() => {
+      setLockoutSeconds((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lockoutSeconds]);
 
   useEffect(() => {
     if (loading || !profile) return;
     
-    // If no PIN is configured, we stay on this screen to set it up.
-    // If PIN is configured, we wait for input.
+    // If onboarding is already completed and user has no PIN code configured, proceed directly
+    if (profile.onboarding_completed && !profile.pin_code) {
+      navigation.replace("MainTabs");
+    }
   }, [profile, loading]);
 
   const handleKeyPress = (num: string) => {
+    if (lockoutSeconds > 0) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      Alert.alert("Sécurité 🔒", `Veuillez patienter encore ${lockoutSeconds}s avant de réessayer.`);
+      return;
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (pin.length < 4) {
       const newPin = pin + num;
@@ -44,12 +64,20 @@ export default function AuthScreen({ navigation }: any) {
       if (newPin.length === 4) {
         // Verify PIN
         if (newPin === profile?.pin_code) {
+          setFailedAttempts(0);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          // Unlock and navigate to MainTabs (Dashboard, History, etc.)
           navigation.replace("MainTabs");
         } else {
+          const nextFailed = failedAttempts + 1;
+          setFailedAttempts(nextFailed);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-          Alert.alert("Erreur", "Code PIN incorrect");
+
+          if (nextFailed >= 5) {
+            setLockoutSeconds(30);
+            Alert.alert("Sécurité 🔒", "5 tentatives infructueuses. Saisie bloquée pendant 30 secondes.");
+          } else {
+            Alert.alert("Code incorrect", `Code PIN erroné (${5 - nextFailed} essai(s) restant(s)).`);
+          }
           setPin("");
         }
       }
@@ -57,31 +85,39 @@ export default function AuthScreen({ navigation }: any) {
   };
 
   const handleBackspace = () => {
+    if (lockoutSeconds > 0) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setPin(pin.slice(0, -1));
   };
 
   const handleSetup = async () => {
     if (!setupName.trim()) {
-      return Alert.alert("Erreur", "Saisissez votre prénom.");
+      return Alert.alert("Prénom requis", "Saisissez votre prénom pour personnaliser l'application.");
     }
-    if (setupPin.length !== 4) {
-      return Alert.alert("Erreur", "Le code PIN doit comporter 4 chiffres.");
-    }
-    if (setupPin !== setupPinConfirm) {
-      return Alert.alert("Erreur", "Les codes PIN ne correspondent pas.");
+
+    // PIN is optional during setup, but if entered, must be 4 digits matching confirmation
+    let finalPin: string | null = null;
+    if (setupPin.length > 0 || setupPinConfirm.length > 0) {
+      if (setupPin.length !== 4) {
+        return Alert.alert("Erreur", "Le code PIN doit comporter exactement 4 chiffres.");
+      }
+      if (setupPin !== setupPinConfirm) {
+        return Alert.alert("Erreur", "Les deux codes PIN ne correspondent pas.");
+      }
+      finalPin = setupPin;
     }
 
     try {
       await updateProfile({
         first_name: setupName.trim(),
-        pin_code: setupPin,
+        pin_code: finalPin,
+        onboarding_completed: true,
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Bienvenue", "Votre compte a été configuré avec succès !");
+      Alert.alert("Bienvenue 🎉", "Votre profil a été configuré avec succès !");
       navigation.replace("MainTabs");
     } catch (e: any) {
-      Alert.alert("Erreur", "Une erreur est survenue.");
+      Alert.alert("Erreur", "Une erreur est survenue lors de la configuration.");
     }
   };
 
@@ -93,10 +129,12 @@ export default function AuthScreen({ navigation }: any) {
     );
   }
 
-  const isFirstStartup = !profile?.pin_code;
+  const isFirstStartup = !profile?.onboarding_completed;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <StatusBar barStyle={profile?.theme === "dark" ? "light-content" : "dark-content"} />
+
       {isFirstStartup ? (
         // First startup: setup screen
         <ScrollView contentContainerStyle={styles.setupContent} keyboardShouldPersistTaps="handled">
@@ -105,7 +143,7 @@ export default function AuthScreen({ navigation }: any) {
           </View>
           <Text style={[styles.title, { color: themeColors.foreground }]}>Bienvenue sur Défi Épargne</Text>
           <Text style={[styles.subtitle, { color: themeColors.mutedForeground }]}>
-            Configurez votre profil d'épargne local sécurisé.
+            Configurez votre profil d'épargne locale sécurisée.
           </Text>
 
           <View style={styles.form}>
@@ -121,12 +159,14 @@ export default function AuthScreen({ navigation }: any) {
               />
             </View>
 
-            <Text style={[styles.label, { color: themeColors.foreground, marginTop: 15 }]}>Code PIN de sécurité (4 chiffres)</Text>
+            <Text style={[styles.label, { color: themeColors.foreground, marginTop: 15 }]}>
+              Code PIN de sécurité (optionnel, 4 chiffres)
+            </Text>
             <View style={[styles.inputContainer, { borderColor: themeColors.border, backgroundColor: themeColors.card }]}>
               <KeyRound size={18} color={themeColors.mutedForeground} style={{ marginRight: 10 }} />
               <TextInput
                 style={[styles.input, { color: themeColors.foreground }]}
-                placeholder="Code à 4 chiffres"
+                placeholder="Code à 4 chiffres (laisser vide si non souhaité)"
                 placeholderTextColor={themeColors.mutedForeground}
                 keyboardType="numeric"
                 secureTextEntry
@@ -136,43 +176,59 @@ export default function AuthScreen({ navigation }: any) {
               />
             </View>
 
-            <Text style={[styles.label, { color: themeColors.foreground, marginTop: 15 }]}>Confirmez le Code PIN</Text>
-            <View style={[styles.inputContainer, { borderColor: themeColors.border, backgroundColor: themeColors.card }]}>
-              <KeyRound size={18} color={themeColors.mutedForeground} style={{ marginRight: 10 }} />
-              <TextInput
-                style={[styles.input, { color: themeColors.foreground }]}
-                placeholder="Confirmez votre code"
-                placeholderTextColor={themeColors.mutedForeground}
-                keyboardType="numeric"
-                secureTextEntry
-                maxLength={4}
-                value={setupPinConfirm}
-                onChangeText={setSetupPinConfirm}
-              />
-            </View>
+            {setupPin.length > 0 && (
+              <>
+                <Text style={[styles.label, { color: themeColors.foreground, marginTop: 15 }]}>Confirmez le Code PIN</Text>
+                <View style={[styles.inputContainer, { borderColor: themeColors.border, backgroundColor: themeColors.card }]}>
+                  <KeyRound size={18} color={themeColors.mutedForeground} style={{ marginRight: 10 }} />
+                  <TextInput
+                    style={[styles.input, { color: themeColors.foreground }]}
+                    placeholder="Confirmez votre code"
+                    placeholderTextColor={themeColors.mutedForeground}
+                    keyboardType="numeric"
+                    secureTextEntry
+                    maxLength={4}
+                    value={setupPinConfirm}
+                    onChangeText={setSetupPinConfirm}
+                  />
+                </View>
+              </>
+            )}
 
-            <TouchableOpacity style={styles.setupBtn} onPress={handleSetup}>
-              <LinearGradient colors={themeColors.gradientBrand} style={styles.btnGradient}>
-                <Text style={styles.setupBtnText}>Commencer mon épargne 🚀</Text>
+            <TouchableOpacity style={styles.submitBtn} onPress={handleSetup}>
+              <LinearGradient
+                colors={themeColors.gradientBrand}
+                style={styles.btnGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.btnText}>Commencer l'aventure 🚀</Text>
               </LinearGradient>
             </TouchableOpacity>
           </View>
         </ScrollView>
       ) : (
-        // Subsequent startups: Enter PIN lock-screen
-        <View style={styles.lockContent}>
-          <View style={styles.lockHeader}>
-            <View style={[styles.lockIconCircle, { backgroundColor: `${themeColors.primary}15` }]}>
-              <Lock size={32} color={themeColors.primary} />
-            </View>
-            <Text style={[styles.title, { color: themeColors.foreground, marginTop: 20 }]}>Défi Épargne Sécurisé</Text>
-            <Text style={[styles.subtitle, { color: themeColors.mutedForeground, marginTop: 5 }]}>
-              Saisissez votre code PIN pour déverrouiller
-            </Text>
+        // Unlock Screen with keypad
+        <View style={styles.unlockContent}>
+          <View style={styles.iconCircle}>
+            <Lock size={36} color={themeColors.primary} />
           </View>
+          <Text style={[styles.title, { color: themeColors.foreground }]}>Déverrouillage</Text>
+          <Text style={[styles.subtitle, { color: themeColors.mutedForeground }]}>
+            Bonjour {profile?.first_name || "Épargnant"}, entrez votre code PIN
+          </Text>
 
-          {/* Dots Indicator */}
-          <View style={styles.dotsRow}>
+          {lockoutSeconds > 0 && (
+            <View style={[styles.lockoutBanner, { backgroundColor: `${themeColors.destructive}20`, borderColor: themeColors.destructive }]}>
+              <ShieldAlert size={16} color={themeColors.destructive} style={{ marginRight: 6 }} />
+              <Text style={{ color: themeColors.destructive, fontSize: 12, fontWeight: "600" }}>
+                Verrouillé : réessayez dans {lockoutSeconds}s
+              </Text>
+            </View>
+          )}
+
+          {/* Dots */}
+          <View style={styles.dotsContainer}>
             {[1, 2, 3, 4].map((i) => (
               <View
                 key={i}
@@ -229,7 +285,6 @@ export default function AuthScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 24) + 10 : 0,
   },
   setupContent: {
     paddingHorizontal: 25,
@@ -279,10 +334,11 @@ const styles = StyleSheet.create({
     height: "100%",
     fontSize: 15,
   },
-  setupBtn: {
-    height: 50,
-    borderRadius: 25,
-    marginTop: 35,
+  submitBtn: {
+    marginTop: 30,
+    width: "100%",
+    height: 52,
+    borderRadius: 14,
     overflow: "hidden",
   },
   btnGradient: {
@@ -290,32 +346,31 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  setupBtnText: {
-    color: "white",
-    fontSize: 15,
+  btnText: {
+    color: "#FFFFFF",
+    fontSize: 16,
     fontWeight: "bold",
   },
-  lockContent: {
+  unlockContent: {
     flex: 1,
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingVertical: 40,
-  },
-  lockHeader: {
-    alignItems: "center",
-    marginTop: 20,
-  },
-  lockIconCircle: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    justifyContent: "center",
+    paddingHorizontal: 30,
+    paddingTop: 60,
     alignItems: "center",
   },
-  dotsRow: {
+  lockoutBanner: {
     flexDirection: "row",
-    gap: 15,
-    marginVertical: 30,
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: 15,
+  },
+  dotsContainer: {
+    flexDirection: "row",
+    gap: 20,
+    marginTop: 40,
+    marginBottom: 50,
   },
   dot: {
     width: 16,
@@ -324,30 +379,23 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   },
   keypad: {
-    width: width - 80,
-    maxWidth: 320,
-    gap: 12,
-    marginBottom: 20,
+    width: "100%",
+    maxWidth: 280,
+    gap: 15,
   },
   keypadRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    gap: 12,
   },
   key: {
-    flex: 1,
-    height: 64,
-    borderRadius: 32,
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     justifyContent: "center",
     alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
   },
   keyText: {
     fontSize: 24,
-    fontWeight: "bold",
+    fontWeight: "600",
   },
 });

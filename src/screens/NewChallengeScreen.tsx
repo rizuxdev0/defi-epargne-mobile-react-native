@@ -5,18 +5,22 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView, Platform, StatusBar,
+  Platform,
+  StatusBar,
   TextInput,
   Switch,
   Alert,
 } from "react-native";
-import { ArrowLeft, Sparkles, Check } from "lucide-react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { ArrowLeft, Sparkles, Check, Zap } from "lucide-react-native";
 import { useApp } from "../services/AppContext";
 import { useMoneyFormatter } from "../hooks/useMoneyFormatter";
 import { COLORS } from "../lib/theme";
 import { CATEGORIES } from "../lib/categories";
 import { generateRandomInstallments, generateRegularInstallments } from "../lib/installments";
+import { CHALLENGE_TEMPLATES, ChallengeTemplate } from "../lib/templates";
 import { LinearGradient } from "expo-linear-gradient";
+import * as Haptics from "expo-haptics";
 
 const EMOJIS = ["🎯", "✈️", "💰", "🏠", "🚗", "📱", "🎓", "💍", "🎁", "🌴", "🏥", "🍔", "🎮", "🚴"];
 
@@ -43,6 +47,7 @@ export default function NewChallengeScreen({ navigation }: any) {
   const [minInst, setMinInst] = useState("500");
   const [maxInst, setMaxInst] = useState("10000");
   const [regularCount, setRegularCount] = useState("20");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
 
   const parsedTarget = parseFloat(targetAmount) || 0;
   const parsedMin = parseFloat(minInst) || 500;
@@ -51,10 +56,30 @@ export default function NewChallengeScreen({ navigation }: any) {
 
   const preview = useMemo(() => {
     if (parsedTarget <= 0) return [];
+    if (selectedTemplateId) {
+      const t = CHALLENGE_TEMPLATES.find((tpl) => tpl.id === selectedTemplateId);
+      if (t) return t.generateInstallments(parsedTarget, profile?.currency_code || "XOF");
+    }
     if (mode === "random") return generateRandomInstallments(parsedTarget, parsedMin, parsedMax);
     if (mode === "regular") return generateRegularInstallments(parsedTarget, parsedCount);
     return [];
-  }, [mode, parsedTarget, parsedMin, parsedMax, parsedCount]);
+  }, [mode, parsedTarget, parsedMin, parsedMax, parsedCount, selectedTemplateId, profile?.currency_code]);
+
+  const handleSelectTemplate = (t: ChallengeTemplate) => {
+    setSelectedTemplateId(t.id);
+    const target = t.getTargetAmount(profile?.currency_code || "XOF");
+    setName(t.name);
+    setEmoji(t.emoji);
+    setCategory(t.category);
+    setDescription(t.description);
+    setTargetAmount(String(target));
+    setMode(t.mode);
+    setUseDate(true);
+    setDurationMode("days");
+    setDurationDays(String(t.recommendedDays));
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setStep(2); // Directly advance to step 2 with everything pre-configured!
+  };
 
   const handleCreate = async () => {
     if (!name.trim()) {
@@ -150,6 +175,41 @@ export default function NewChallengeScreen({ navigation }: any) {
         {/* Step 1: Info & Objectif */}
         {step === 1 && (
           <View style={styles.stepContainer}>
+            {/* Template shortcuts */}
+            <View style={{ marginBottom: 22 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                <Sparkles size={16} color={themeColors.primary} />
+                <Text style={{ fontSize: 13, fontWeight: "bold", color: themeColors.foreground }}>
+                  Modèles Populaires (1 clic)
+                </Text>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+                {CHALLENGE_TEMPLATES.map((tpl) => (
+                  <TouchableOpacity
+                    key={tpl.id}
+                    style={[
+                      styles.templateCard,
+                      { backgroundColor: themeColors.card, borderColor: themeColors.border },
+                    ]}
+                    onPress={() => handleSelectTemplate(tpl)}
+                  >
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ fontSize: 24 }}>{tpl.emoji}</Text>
+                      <View style={[styles.templateBadge, { backgroundColor: `${themeColors.primary}15` }]}>
+                        <Text style={[styles.templateBadgeText, { color: themeColors.primary }]}>{tpl.badge}</Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.templateName, { color: themeColors.foreground }]} numberOfLines={1}>
+                      {tpl.name}
+                    </Text>
+                    <Text style={[styles.templateTarget, { color: themeColors.primary }]}>
+                      {fmt(tpl.getTargetAmount(profile?.currency_code || "XOF"))}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+
             <Text style={[styles.label, { color: themeColors.foreground }]}>Nom du Défi</Text>
             <TextInput
               style={[styles.input, { color: themeColors.foreground, backgroundColor: themeColors.card, borderColor: themeColors.border }]}
@@ -442,6 +502,18 @@ export default function NewChallengeScreen({ navigation }: any) {
               </View>
             )}
 
+            {/* Mode Free explanation */}
+            {mode === "free" && (
+              <View style={[styles.previewContainer, { backgroundColor: `${themeColors.primary}10`, borderColor: themeColors.primary, borderWidth: 1, borderRadius: 14, padding: 15 }]}>
+                <Text style={{ fontSize: 13, fontWeight: "bold", color: themeColors.primary, marginBottom: 4 }}>
+                  🌱 Mode Versement Libre
+                </Text>
+                <Text style={{ fontSize: 12, color: themeColors.foreground, lineHeight: 18 }}>
+                  Aucune case pré-calculée. Tu pourras enregistrer tes versements au fur et à mesure selon tes disponibilités jusqu'à atteindre les {fmt(parsedTarget)} !
+                </Text>
+              </View>
+            )}
+
             {/* Preview of installments */}
             {preview.length > 0 && (
               <View style={styles.previewContainer}>
@@ -647,5 +719,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     marginRight: 8,
+  },
+  templateCard: {
+    width: 170,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 12,
+  },
+  templateBadge: {
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  templateBadgeText: {
+    fontSize: 9,
+    fontWeight: "bold",
+  },
+  templateName: {
+    fontSize: 12,
+    fontWeight: "bold",
+    marginTop: 8,
+  },
+  templateTarget: {
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 2,
   },
 });
